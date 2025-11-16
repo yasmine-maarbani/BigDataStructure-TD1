@@ -37,7 +37,7 @@ The `tests.py` file is the main entry point for running the complete analysis fo
 2.  Print a summary comparison of their total sizes.
 3.  Print the sharding strategy analysis.
 
-To run it, execute the following command from the `my_project/` directory:
+To run it, execute the following command from the `BigDataStructure-TD1/` directory:
 
 ```bash
 python run_tests.py
