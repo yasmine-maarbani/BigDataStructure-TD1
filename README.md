@@ -31,9 +31,6 @@ BigDataStructure-TD1/
 │
 ├─ tests.py                        # Lightweight sanity tests (optional; run with pytest)
 │
-├─ notebooks/                      # Jupyter notebooks (just we started here, a quick tests)
-│  └─ (your .ipynb files)
-│
 ├─ README.md                       # Project overview, usage, and sizing rules
 ├─ .gitignore                      # Python/git ignores
 ```
