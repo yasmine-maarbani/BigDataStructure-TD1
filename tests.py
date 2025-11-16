@@ -1,5 +1,4 @@
-from Database_calculator import NoSQLDatabaseCalculator
-
+from nosqlcalc import NoSQLDatabaseCalculator
 
 # ============================================================
 # STATISTICS FROM TD
@@ -344,7 +343,7 @@ DATABASES = {
 
 
 # ============================================================
-# SHARDING TEST CASES 
+# SHARDING TEST CASES
 # ============================================================
 
 SHARDING_TESTS = [
@@ -391,12 +390,12 @@ def test_single_database(db_name: str, db_config: dict, calc: NoSQLDatabaseCalcu
     print(f"DATABASE: {db_name}")
     print(f"Signature: {db_config['signature']}")
     print("="*80)
-    
+
     for coll_name, schema in db_config['collections'].items():
         calc.add_collection(coll_name, schema)
-    
+
     calc.print_database_summary()
-    
+
     print(f"\n{'─'*80}")
     print(f"DETAILED COLLECTION ANALYSIS")
     print(f"{'─'*80}")
@@ -411,7 +410,7 @@ def test_all_databases():
     print("█" + "█"*20 + "TD COMPLETE TEST SUITE" + "█"*37 + "█")
     print("█" + "█"*78 + "█")
     print("█"*80)
-    
+
     # Test each database
     for db_name, db_config in DATABASES.items():
         # Create fresh calculator for each DB
@@ -424,15 +423,15 @@ def compare_databases():
     print("\n" + "="*80)
     print("DATABASE SIZE COMPARISON")
     print("="*80)
-    
+
     results = []
-    
+
     for db_name, db_config in DATABASES.items():
         calc = NoSQLDatabaseCalculator(TD_STATISTICS)
-        
+
         for coll_name, schema in db_config['collections'].items():
             calc.add_collection(coll_name, schema)
-        
+
         total_gb, details = calc.compute_database_size_gb()
         results.append({
             'name': db_name,
@@ -440,12 +439,12 @@ def compare_databases():
             'size_gb': total_gb,
             'collections': len(db_config['collections'])
         })
-    
+
     print(f"\n{'Database':<10} {'Collections':<15} {'Size (GB)':<15} {'Signature':<50}")
     print("-"*90)
     for r in results:
         print(f"{r['name']:<10} {r['collections']:<15} {r['size_gb']:<15.4f} {r['signature']:<50}")
-    
+
     print("\n" + "="*80)
 
 
@@ -456,20 +455,20 @@ def test_sharding():
     print("█" + " "*20 + "SHARDING" + " "*24 + "█")
     print("█" + " "*78 + "█")
     print("█"*80)
-    
+
     print(f"\nConfiguration: {TD_STATISTICS['servers']:,} servers in cluster")
     print(f"Total data: {TD_STATISTICS['order_lines']:,} order lines\n")
-    
+
     # Use DB1 for sharding tests
     calc = NoSQLDatabaseCalculator(TD_STATISTICS)
     for coll_name, schema in DATABASES["DB1"]['collections'].items():
         calc.add_collection(coll_name, schema)
-    
+
     # Test each sharding strategy with detailed output
     print("="*90)
     print(f"{'Strategy':<25} {'Docs/Server':<20} {'Distinct Values/Server':<25}")
     print("="*90)
-    
+
     for test in SHARDING_TESTS:
         stats = calc.compute_sharding_stats(
             test['collection'],
@@ -477,11 +476,11 @@ def test_sharding():
             test['distinct_values']
         )
         strategy = f"{test['collection']}-#{test['key']}"
-        
-        
+
+
         print(f"{strategy:<25} {stats['avg_docs_per_server']:<20,.2f} "
               f"{stats['avg_distinct_values_per_server']:<25,.2f} ")
-    
+
     print("="*90)
 
 
@@ -490,20 +489,20 @@ def test_specific_collection_details():
     print("\n" + "="*80)
     print("DETAILED EXAMPLES: Key Collections")
     print("="*80)
-    
+
     calc = NoSQLDatabaseCalculator(TD_STATISTICS)
-    
+
     examples = [
         ("DB1 Product", "DB1", "Product"),
         ("DB3 Stock (with embedded Product)", "DB3", "Stock"),
         ("DB5 Product (with OrderLines)", "DB5", "Product"),
     ]
-    
+
     for label, db_name, coll_name in examples:
         print(f"\n{'─'*80}")
         print(f"{label}")
         print(f"{'─'*80}")
-        
+
         calc = NoSQLDatabaseCalculator(TD_STATISTICS)
         db_config = DATABASES[db_name]
         calc.add_collection(coll_name, db_config['collections'][coll_name])
@@ -522,7 +521,7 @@ if __name__ == "__main__":
     print("█" + " "*25 + "Big Data Structure Course" + " "*29 + "█")
     print("█" + " "*78 + "█")
     print("█"*80)
-    
+
     # Menu
     print("\nTEST MENU:")
     print("  1. Test ALL databases (DB1-DB5) - Complete analysis")
@@ -530,9 +529,9 @@ if __name__ == "__main__":
     print("  3. Test sharding strategies")
     print("  4. Show detailed examples")
     print("  5. Run EVERYTHING")
-    
+
     choice = input("\nChoose test (1-5) or press Enter for all: ").strip()
-    
+
     if choice == "1":
         test_all_databases()
     elif choice == "2":
@@ -546,7 +545,7 @@ if __name__ == "__main__":
         compare_databases()
         test_sharding()
         test_specific_collection_details()
-    
+
     print("\n" + "█"*80)
     print("█" + " "*78 + "█")
     print("█" + " "*30 + "TESTS COMPLETED!" + " "*28 + "█")
