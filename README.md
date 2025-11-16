@@ -20,11 +20,23 @@ The calculator takes a set of statistics (e.g., number of clients, products) and
 * **Automatic Type Detection:** Guesses the collection type (e.g., Product, Client, OrderLine) based on the fields present in its JSON schema.
 
 
-BigDataStructure-TD1/ │ 
-├── nosqlcalc/ # The Python package │ 
-   ├── init.py # Makes 'nosqlcalc' a package │ 
-   └── database_calculator.py # Contains the NoSQLDatabaseCalculator class │
-└── run_tests.py # Main executable to run the homework analysis
+## Directory layout
+
+```
+BigDataStructure-TD1/
+├─ nosqlcalc/                      # Installable package
+│  ├─ __init__.py                  # Exports NoSQLDatabaseCalculator
+│  └─ Database_calculator.py       # Compatibility shim for legacy imports (optional)
+│
+│
+├─ tests.py                        # Lightweight sanity tests (optional; run with pytest)
+│
+├─ notebooks/                      # Jupyter notebooks (just we started here, a quick tests)
+│  └─ (your .ipynb files)
+│
+├─ README.md                       # Project overview, usage, and sizing rules
+├─ .gitignore                      # Python/git ignores
+```
 
 ## 🏃 How to Run
 
