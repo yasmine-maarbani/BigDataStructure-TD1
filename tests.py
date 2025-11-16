@@ -2,7 +2,7 @@ from Database_calculator import NoSQLDatabaseCalculator
 
 
 # ============================================================
-# STATISTICS FROM TD (Section 2.2)
+# STATISTICS FROM TD
 # ============================================================
 
 TD_STATISTICS = {
