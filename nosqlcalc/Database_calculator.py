@@ -486,3 +486,173 @@ class NoSQLDatabaseCalculator:
         print(f"  • Servers: {stats['num_servers']:,}")
         print(f"  • Docs/server: {stats['avg_docs_per_server']:,.2f}")
         print(f"  • Distinct values/server: {stats['avg_distinct_values_per_server']:,.2f}")
+
+
+
+
+    # ================================================================
+    # QUERY COST (VT) CALCULATION - HOMEWORK 3.3
+    # ================================================================
+    
+    def _compute_C1(self, coll_name: str, filter_key: str, sharding_key: str) -> Dict:
+        """
+        Computes the first part of the cost (C1) for a filter.
+        Implements 'Filter with sharding' and 'Filter without sharding'.
+        """
+        is_sharded = (filter_key == sharding_key)
+        
+        # #S1: 1 if sharding key matches filter key, 1000 otherwise.
+        num_servers_S1 = 1 if is_sharded else 1000
+        
+        try:
+            num_output_docs_O1, size_S1, size_O1 = get_query_stats(coll_name, filter_key, "C1")
+        except ValueError as e:
+            raise ValueError(f"C1 Error: Cannot retrieve statistics for {coll_name}.")
+
+        # C1 = #S1 * size S1 + #O1 * size O1
+        C1_volume = (num_servers_S1 * size_S1) + (num_output_docs_O1 * size_O1)
+        
+        return {
+            "volume": C1_volume,
+            "loops": num_output_docs_O1, 
+            "is_sharded": is_sharded,
+            "S1": num_servers_S1
+        }
+        
+    def _compute_C2(self, coll_name: str, join_key: str, sharding_key: str, loops: int) -> Dict:
+        """
+        Computes the second part of the cost (C2) for a join.
+        Implements 'Nested Loop with sharding' and 'Nested Loop without sharding'.
+        """
+        if loops == 0:
+            return {"volume": 0, "is_sharded": True, "S2": 0}
+
+        is_sharded = (join_key == sharding_key)
+        
+        # #S2: 1 if sharding key matches join key, 1000 otherwise (per loop).
+        num_servers_S2 = 1 if is_sharded else 1000
+        
+        try:
+            num_output_docs_O2, size_S2, size_O2 = get_query_stats(coll_name, join_key, "C2")
+        except ValueError as e:
+            raise ValueError(f"C2 Error: Cannot retrieve statistics for {coll_name}.")
+
+        # C2_per_loop = #S2 * size S2 + #O2 * size O2
+        C2_volume_per_loop = (num_servers_S2 * size_S2) + (num_output_docs_O2 * size_O2)
+        
+        total_C2_volume = loops * C2_volume_per_loop
+        
+        return {
+            "volume": total_C2_volume,
+            "is_sharded": is_sharded,
+            "S2": num_servers_S2
+        }
+
+
+    def compute_filter_query_vt(self, collection_name: str, filter_key: str, collection_sharding_key: str) -> Dict:
+        """
+        Computes the Vt cost for a simple filter query (Vt = C1).
+        """
+        result_C1 = self._compute_C1(collection_name, filter_key, collection_sharding_key)
+        
+        vt = result_C1["volume"]
+        op_name = f"Filtre {'avec' if result_C1['is_sharded'] else 'sans'} sharding"
+        
+        print(f"\n--- Coût du Filtre ({op_name}) ---")
+        print(f"C1 ({collection_name}): #S1={result_C1['S1']}, Volume={result_C1['volume']:,} B")
+        
+        return {
+            "query_type": "Filter",
+            "Vt_total": vt,
+            "C1_volume": result_C1['volume'],
+            "C1_sharding_strategy": op_name
+        }
+
+    def compute_join_query_vt(self, coll1_name: str, coll1_filter_key: str, coll1_sharding_key: str,
+                                coll2_name: str, coll2_join_key: str, coll2_sharding_key: str) -> Dict:
+        """
+        Computes the Vt cost for a join query (Vt = C1 + C2_total).
+        """
+        
+        result_C1 = self._compute_C1(coll1_name, coll1_filter_key, coll1_sharding_key)
+        loops = result_C1["loops"]
+
+        result_C2 = self._compute_C2(coll2_name, coll2_join_key, coll2_sharding_key, loops)
+        
+        Vt_total = result_C1["volume"] + result_C2["volume"]
+        
+        c1_op = f"Filtre {'avec' if result_C1['is_sharded'] else 'sans'} sharding"
+        c2_op = f"Boucle {'avec' if result_C2['is_sharded'] else 'sans'} sharding"
+
+        print(f"\n--- Coût de la Jointure (C1: {c1_op}, C2: {c2_op}) ---")
+        print(f"C1 ({coll1_name}): #S1={result_C1['S1']}, Volume={result_C1['volume']:,} B")
+        print(f"C2 ({coll2_name}): Loops={loops:,}, #S2/loop={result_C2['S2']}, Volume={result_C2['volume']:,} B")
+        
+        return {
+            "query_type": "Join",
+            "Vt_total": Vt_total,
+            "C1_volume": result_C1['volume'],
+            "C2_volume": result_C2['volume'],
+            "C1_sharding_strategy": c1_op,
+            "C2_sharding_strategy": c2_op,
+            "Loops": loops
+        }
+
+    def resolve_query_strategy(self, entry_coll_name: str, entry_filter_key: str, 
+                               target_coll_name: str, sharding_config: Dict) -> Dict:
+        """
+        Determines if the query is solved as a simple FILTER or requires a JOIN
+        based on the current denormalization schema (DB1/DB2/DB3).
+        """
+        
+        # 1. Check for embedding in the entry collection (e.g., P in S -> DB3 for Q4)
+        if target_coll_name in self.schema_map.get(entry_coll_name, []):
+            print(f"\n[{self.current_schema}] Denormalization detected: {target_coll_name} EMBEDDED in {entry_coll_name}. No JOIN required.")
+            
+            return self.compute_filter_query_vt(
+                collection_name=entry_coll_name,
+                filter_key=entry_filter_key,
+                collection_sharding_key=sharding_config.get(entry_coll_name, "N/A")
+            )
+
+        # 2. Check for embedding in the target collection (e.g., S in P -> DB2 for Q4)
+        elif entry_coll_name in self.schema_map.get(target_coll_name, []):
+            print(f"\n[{self.current_schema}] Denormalization detected: {entry_coll_name} EMBEDDED in {target_coll_name}. No JOIN required.")
+            
+            # Rewrite query as a filter on the HOST collection (target_coll_name)
+            return self.compute_filter_query_vt(
+                collection_name=target_coll_name,
+                filter_key=entry_filter_key,      
+                collection_sharding_key=sharding_config.get(target_coll_name, "N/A")
+            )
+
+        # 3. Default case: JOIN is required (DB1 or non-embedded model)
+        else:
+            print(f"\n[{self.current_schema}] Normalized Model (DB1) or non-embedded configuration: JOIN required.")
+            
+            return self.compute_join_query_vt(
+                coll1_name=entry_coll_name, coll1_filter_key=entry_filter_key, coll1_sharding_key=sharding_config.get(entry_coll_name, "N/A"),
+                coll2_name=target_coll_name, coll2_join_key=sharding_config.get(target_coll_name, "N/A"), coll2_sharding_key=sharding_config.get(target_coll_name, "N/A")
+            )
+        
+        
+def get_query_stats(collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
+    """
+    Returns (num_output_docs, size_S, size_O) for a specific query part.
+    Sizes S and O are in bytes (B).
+    """
+    # Fixed stats based on TD data 
+    MOCK_STATS = {
+        ("Prod", "brand", "C1"): (50, 204, 112), 
+        ("St", "IDW", "C1"): (10**5, 152, 40), 
+        ("Prod", "IDP", "C2"): (1, 92, 112), 
+        ("Prod", "brand", "C1"): (50, 204, 132), 
+        ("St", "IDP", "C2"): (200, 60, 40), 
+    }
+    
+    key = (collection_name, query_key, phase)
+    if key in MOCK_STATS:
+        return MOCK_STATS[key]
+    
+    print(f"WARNING: MISSING STATS FOR {key}. Using default values.")
+    return (1, 100, 100) 
