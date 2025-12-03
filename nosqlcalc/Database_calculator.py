@@ -502,7 +502,7 @@ class NoSQLDatabaseCalculator:
         is_sharded = (filter_key == sharding_key)
         
         # #S1: 1 if sharding key matches filter key, 1000 otherwise.
-        num_servers_S1 = 1 if is_sharded else 1000
+        num_servers_S1 = 1 if is_sharded else 1000 #TODO: adjust number of servers if needed
         
         try:
             num_output_docs_O1, size_S1, size_O1 = get_query_stats(coll_name, filter_key, "C1")
@@ -530,7 +530,7 @@ class NoSQLDatabaseCalculator:
         is_sharded = (join_key == sharding_key)
         
         # #S2: 1 if sharding key matches join key, 1000 otherwise (per loop).
-        num_servers_S2 = 1 if is_sharded else 1000
+        num_servers_S2 = 1 if is_sharded else 1000 #TODO: adjust number of servers if needed
         
         try:
             num_output_docs_O2, size_S2, size_O2 = get_query_stats(coll_name, join_key, "C2")
@@ -635,7 +635,7 @@ class NoSQLDatabaseCalculator:
                 coll2_name=target_coll_name, coll2_join_key=sharding_config.get(target_coll_name, "N/A"), coll2_sharding_key=sharding_config.get(target_coll_name, "N/A")
             )
         
-        
+#TODO: Replace this mock function with actual statistics retrieval logic 
 def get_query_stats(collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
     """
     Returns (num_output_docs, size_S, size_O) for a specific query part.
@@ -643,6 +643,7 @@ def get_query_stats(collection_name: str, query_key: str, phase: str) -> Tuple[i
     """
     # Fixed stats based on TD data 
     MOCK_STATS = {
+        ("St", "IDP\_IDW", "C1") : (1, 152, 112),
         ("Prod", "brand", "C1"): (50, 204, 112), 
         ("St", "IDW", "C1"): (10**5, 152, 40), 
         ("Prod", "IDP", "C2"): (1, 92, 112), 

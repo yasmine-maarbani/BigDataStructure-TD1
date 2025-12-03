@@ -51,12 +51,14 @@ SCHEMAS_CONFIG = {
 }
 
 QUERIES = {
+    "Q1": " SELECT S.quantity, S.location FROM Stock S WHERE S.IDP = $IDP AND S.IDW = $IDW;",
     "Q2": "SELECT P.name, P.price FROM Product P WHERE P.brand = $brand;", 
     "Q4": "SELECT P.name, S.quantity FROM Stock S JOIN Product P ON S.IDP = P.IDP WHERE S.IDW = $IDW;",
     "Q5": "SELECT P.name, P.price, S.IDW, S.quantity FROM Product P JOIN Stock S ON P.IDP = S.IDP WHERE P.brand = 'Apple';",
 }
 
 SHARDING_STRATEGIES = {
+    "R1.1": {"St": "IDW"}, "R1.2": {"St": "IDP"},
     "R2.1": {"Prod": "brand"}, "R2.2": {"Prod": "IDP"},   
     "R4.1": {"St": "IDW", "Prod": "IDP"}, "R4.2": {"St": "IDP", "Prod": "IDP"}, 
     "R5.1": {"Prod": "brand", "St": "IDP"}, "R5.2": {"Prod": "IDP", "St": "IDP"},   
@@ -131,7 +133,8 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("PART 1 : SIMULATION ON DB1 (Normalized Model)")
     print("="*80)
-    
+    run_test_case(calc, "Q1", "R1.1")
+    run_test_case(calc, "Q1", "R1.2")
     # A. Filter Tests (Q2)
     run_test_case(calc, "Q2", "R2.1")
     run_test_case(calc, "Q2", "R2.2")
