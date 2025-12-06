@@ -11,7 +11,6 @@ class NoSQLDatabaseCalculator:
         calc.print_collection_analysis("Product")
     """
 
-    # Sizes of types (in Bytes)
     SIZE_NUMBER = 8
     SIZE_STRING = 80
     SIZE_DATE = 20
@@ -25,13 +24,13 @@ class NoSQLDatabaseCalculator:
         self.current_schema = current_schema
         self.schema_map = {}
         
-        # Mapping des schémas de dénormalisation
+        # Mapping of denormlization schemas
         self.SCHEMAS = {
-            "DB1": {},  # Normalisé
-            "DB2": {"Prod": ["St"]},  # Stock dans Product
-            "DB3": {"St": ["Prod"]},  # Product dans Stock
-            "DB4": {"OL": ["Prod"]},  # Product dans OrderLine
-            "DB5": {"Prod": ["OL"]},  # OrderLine dans Product
+            "DB1": {}, 
+            "DB2": {"Prod": ["St"]},  
+            "DB3": {"St": ["Prod"]}, 
+            "DB4": {"OL": ["Prod"]},  
+            "DB5": {"Prod": ["OL"]},  
         }
         self.schema_map = self.SCHEMAS.get(current_schema, {})
         
@@ -805,9 +804,14 @@ class NoSQLDatabaseCalculator:
         return size
 
 
+    from typing import Tuple
+
+    # NOTE: Cette fonction doit être une méthode de la classe NoSQLDatabaseCalculator
+    # (def get_query_stats(self, collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:)
+
     def get_query_stats(self, collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
         """
-        Returns (num_output_docs, size_S, size_O) calculés avec la formule TD1/TD2.
+        Returns (num_output_docs, size_S, size_O) calculés avec les formules du TD.
         Tous les calculs de taille (S et O) sont faits dynamiquement.
         """
         
@@ -821,16 +825,17 @@ class NoSQLDatabaseCalculator:
         # PARTIE 1: #O (nombre de documents/boucles)
         # ====================================================================
         
-        # Valeurs canoniques de #O (indépendante du calcul des tailles)
         if phase == "C1":
             if query_key == "IDP_IDW":
-                num_output_docs = 1 # Q1
+                num_output_docs = 1 # Q1 (Clé primaire)
             elif query_key == "brand":
                 num_output_docs = self.statistics.get('apple_products', 50) # Q2, Q5 C1
             elif query_key == "IDW":
-                # Q4 C1 : Nombre de stocks par entrepôt (10^5)
-                # Utilisation du calcul pour la cohérence
+                # Q4 C1 : Nombre de stocks par entrepôt (100k)
                 num_output_docs = int(self.nb_docs["St"] / self.nb_docs["Wa"])
+            elif query_key == "date":
+                # Q3 : OrderLine docs par jour (~10.9M)
+                num_output_docs = int(self.nb_docs["OL"] / self.statistics.get('dates_per_year', 365))
             else:
                 num_output_docs = 1
                 
@@ -853,39 +858,37 @@ class NoSQLDatabaseCalculator:
         # C1 : Coût du filtre (Taille du document d'entrée avec overhead du message)
         if phase == "C1":
             if collection_name == "St":
-                # Q1 (IDP_IDW) : Document Stock complet (IDP, IDW, quantity, location)
                 if query_key == "IDP_IDW":
+                    # Q1 : Document Stock complet (152 B)
                     size_S = 3 * SIZE_NUM + 1 * SIZE_STR + 4 * SIZE_KEY # 152 B ✅
-                
-                # Q4 C1 (IDW) : Canonical TD value 60 B (Formule minimaliste avec overhead)
                 elif query_key == "IDW":
-                    # Formule pour 60 B: #int=2, #keys=3, + 8 B d'overhead
-                    size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 16 + 36 + 8 = 60 B ✅
-                
+                    # Q4 C1 : Canonical TD value (60 B)
+                    size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 60 B ✅
                 else:
                     size_S = 3 * SIZE_NUM + 1 * SIZE_STR + 4 * SIZE_KEY # 152 B
 
             elif collection_name == "Prod":
-                # Q2/Q5 C1 (brand) : Canonical TD value 204 B (Formule Product simplifiée)
                 if query_key == "brand":
-                    # Formule pour 204 B: #int=1, #string=2, #keys=3
-                    size_S = 1 * SIZE_NUM + 2 * SIZE_STR + 3 * SIZE_KEY # 8 + 160 + 36 = 204 B ✅
-                
+                    # Q2/Q5 C1 : Canonical TD value (204 B)
+                    size_S = 1 * SIZE_NUM + 2 * SIZE_STR + 3 * SIZE_KEY # 204 B ✅
                 else:
-                    size_S = 2 * SIZE_NUM + 2 * SIZE_STR + 4 * SIZE_KEY # 224 B (Défaut Product)
+                    size_S = 2 * SIZE_NUM + 2 * SIZE_STR + 4 * SIZE_KEY # 224 B (Défaut Prod)
+                    
+            elif collection_name == "OL":
+                if query_key in ["date", "IDC", "IDP"]:
+                    # Q3 : Canonical TD value (72 B)
+                    size_S = 2 * SIZE_NUM + 1 * SIZE_DATE + 3 * SIZE_KEY # 72 B ✅
+                else:
+                    size_S = 72
                     
         # C2 : Coût de la boucle (Taille du message de JOIN)
         elif phase == "C2":
             if collection_name == "Prod":
-                # Q4 C2 (IDP) : Canonical TD value 92 B
-                # Formule pour 92 B: #int=1, #string=1, #keys=1, ajustement de 8 B
-                size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 1 * SIZE_KEY - 8 # 8 + 80 + 12 - 8 = 92 B ✅
-            
+                # Q4 C2/Q5 C1 : Canonical TD value (92 B)
+                size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 1 * SIZE_KEY - 8 # 92 B ✅
             elif collection_name == "St":
-                # Q5 C2 (IDP) : Canonical TD value 60 B
-                # Formule pour 60 B (identique à St C1 IDW)
+                # Q5 C2 : Canonical TD value (60 B)
                 size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 60 B ✅
-            
             else:
                 size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 2 * SIZE_KEY # 112 B
         
@@ -897,13 +900,13 @@ class NoSQLDatabaseCalculator:
         
         if phase == "C1":
             if collection_name == "St":
-                # Q1: Projection (quantity, location)
                 if query_key == "IDP_IDW": 
-                    # #int=1 (quantity), #string=1 (location), #keys=2
+                    # Q1: Projection (quantity, location)
+                    # Correction: #int=1 (quantity), #string=1 (location), #keys=2
                     size_O = 1 * SIZE_NUM + 1 * SIZE_STR + 2 * SIZE_KEY # 112 B ✅
                 
-                # Q4 C1: Projection pour la jointure (IDP, quantity)
                 elif query_key == "IDW":
+                    # Q4 C1: Projection pour la jointure (IDP, quantity)
                     # #int=2 (IDP, quantity), #keys=2
                     size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
                     
@@ -911,14 +914,14 @@ class NoSQLDatabaseCalculator:
                     size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B (Défaut: Projection minimale)
                     
             elif collection_name == "Prod":
-                # Q2 (brand) : Projection (name, price)
-                if query_key == "brand":
-                    # #string=1 (name), #int=1 (price), #keys=2
-                    size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B ✅
+                # Q2/Q5 C1: Projection (name, price)
+                size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B ✅
                 
-                else:
-                    size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B (Défaut)
-                    
+            elif collection_name == "OL":
+                # Q3: SELECT IDP, quantity
+                # #int=2, #keys=2
+                size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
+                
         elif phase == "C2":
             if collection_name == "Prod":
                 # Q4 C2: Projection (name, price)
