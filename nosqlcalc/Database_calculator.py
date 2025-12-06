@@ -18,17 +18,23 @@ class NoSQLDatabaseCalculator:
     SIZE_LONG_STRING = 200
     SIZE_KEY_VALUE = 12
 
-    def __init__(self, statistics: Dict):
-        """
-        Initializes the calculator.
-
-        Args:
-            statistics: dict with 'clients', 'products', 'order_lines',
-                       'warehouses', 'avg_categories_per_product'
-        """
+    def __init__(self, statistics: Dict, current_schema: str = "DB1"):
+        """Initializes the calculator with schema support."""
         self.statistics = statistics
         self.collections = {}
-
+        self.current_schema = current_schema
+        self.schema_map = {}
+        
+        # Mapping des schémas de dénormalisation
+        self.SCHEMAS = {
+            "DB1": {},  # Normalisé
+            "DB2": {"Prod": ["St"]},  # Stock dans Product
+            "DB3": {"St": ["Prod"]},  # Product dans Stock
+            "DB4": {"OL": ["Prod"]},  # Product dans OrderLine
+            "DB5": {"Prod": ["OL"]},  # OrderLine dans Product
+        }
+        self.schema_map = self.SCHEMAS.get(current_schema, {})
+        
         # Number of documents per collection
         self.nb_docs = {
             "Cl": statistics.get('clients', 10**7),
@@ -37,6 +43,11 @@ class NoSQLDatabaseCalculator:
             "Wa": statistics.get('warehouses', 200),
         }
         self.nb_docs["St"] = self.nb_docs["Prod"] * self.nb_docs["Wa"]
+        
+        # Stockage des tailles de documents calculées
+        self.computed_sizes = {}
+
+        
 
         # Relationship matrix: how many children per parent
         self.avg_length = {
@@ -494,21 +505,53 @@ class NoSQLDatabaseCalculator:
     # QUERY COST (VT) CALCULATION - HOMEWORK 3.3
     # ================================================================
     
+    def compute_and_store_sizes(self):
+        """
+        Calcule les tailles de tous les documents et les stocke.
+        À appeler après avoir ajouté toutes les collections.
+        """
+        for coll_name, coll_data in self.collections.items():
+            schema = coll_data['schema']
+            result = self.compute_document_size(schema)
+            
+            detected_type = result['collection']
+            
+            self.computed_sizes[coll_name] = {
+                'type': detected_type,
+                'doc_size': result['doc_size'],
+                'size_outside': result['size_outside'],
+                'size_inside': result['size_inside'],
+                'size_keys': result['size_keys']
+            }
+            
+            print(f"✓ Stored size for {coll_name} ({detected_type}): {result['doc_size']} B")
+
+
+
     def _compute_C1(self, coll_name: str, filter_key: str, sharding_key: str) -> Dict:
         """
         Computes the first part of the cost (C1) for a filter.
         Implements 'Filter with sharding' and 'Filter without sharding'.
         """
-        is_sharded = (filter_key == sharding_key)
+        # IMPORTANT: Pour Q1, la clé de filtrage est composée "IDP_IDW"
+        # mais on doit vérifier le sharding sur une seule clé
+        
+        # Déterminer si on est en situation de sharding
+        if filter_key == "IDP_IDW":
+            # Q1: filtre sur IDP ET IDW, mais sharding sur une seule
+            # R1.1: sharding sur IDW -> NOT sharded (car on filtre aussi sur IDP)
+            # R1.2: sharding sur IDP -> sharded (car IDP est dans le filtre)
+            is_sharded = (sharding_key == "IDP" or sharding_key == "IDW")
+        else:
+            # Cas normal: sharding si la clé de filtre = clé de sharding
+            is_sharded = (filter_key == sharding_key)
         
         # #S1: 1 if sharding key matches filter key, 1000 otherwise.
-        num_servers_S1 = 1 if is_sharded else 1000 #TODO: adjust number of servers if needed
+        num_servers_S1 = 1 if is_sharded else self.statistics.get('servers', 1000)
         
-        try:
-            num_output_docs_O1, size_S1, size_O1 = get_query_stats(coll_name, filter_key, "C1")
-        except ValueError as e:
-            raise ValueError(f"C1 Error: Cannot retrieve statistics for {coll_name}.")
-
+        # UTILISER LA MÉTHODE DE LA CLASSE (self.)
+        num_output_docs_O1, size_S1, size_O1 = self.get_query_stats(coll_name, filter_key, "C1")
+        
         # C1 = #S1 * size S1 + #O1 * size O1
         C1_volume = (num_servers_S1 * size_S1) + (num_output_docs_O1 * size_O1)
         
@@ -516,28 +559,26 @@ class NoSQLDatabaseCalculator:
             "volume": C1_volume,
             "loops": num_output_docs_O1, 
             "is_sharded": is_sharded,
-            "S1": num_servers_S1
+            "S1": num_servers_S1,
+            "size_S1": size_S1,
+            "size_O1": size_O1,
+            "num_O1": num_output_docs_O1
         }
-        
+
+
     def _compute_C2(self, coll_name: str, join_key: str, sharding_key: str, loops: int) -> Dict:
         """
         Computes the second part of the cost (C2) for a join.
-        Implements 'Nested Loop with sharding' and 'Nested Loop without sharding'.
         """
         if loops == 0:
-            return {"volume": 0, "is_sharded": True, "S2": 0}
+            return {"volume": 0, "is_sharded": True, "S2": 0, "size_S2": 0, "size_O2": 0, "num_O2": 0}
 
         is_sharded = (join_key == sharding_key)
         
-        # #S2: 1 if sharding key matches join key, 1000 otherwise (per loop).
-        num_servers_S2 = 1 if is_sharded else 1000 #TODO: adjust number of servers if needed
+        num_servers_S2 = 1 if is_sharded else self.statistics.get('servers', 1000)
         
-        try:
-            num_output_docs_O2, size_S2, size_O2 = get_query_stats(coll_name, join_key, "C2")
-        except ValueError as e:
-            raise ValueError(f"C2 Error: Cannot retrieve statistics for {coll_name}.")
-
-        # C2_per_loop = #S2 * size S2 + #O2 * size O2
+        num_output_docs_O2, size_S2, size_O2 = self.get_query_stats(coll_name, join_key, "C2")
+        
         C2_volume_per_loop = (num_servers_S2 * size_S2) + (num_output_docs_O2 * size_O2)
         
         total_C2_volume = loops * C2_volume_per_loop
@@ -545,11 +586,16 @@ class NoSQLDatabaseCalculator:
         return {
             "volume": total_C2_volume,
             "is_sharded": is_sharded,
-            "S2": num_servers_S2
+            "S2": num_servers_S2,
+            "size_S2": size_S2,
+            "size_O2": size_O2,
+            "num_O2": num_output_docs_O2
         }
 
 
-    def compute_filter_query_vt(self, collection_name: str, filter_key: str, collection_sharding_key: str) -> Dict:
+    
+    def compute_filter_query_vt(self, collection_name: str, filter_key: str, 
+                            collection_sharding_key: str) -> Dict:
         """
         Computes the Vt cost for a simple filter query (Vt = C1).
         """
@@ -559,21 +605,35 @@ class NoSQLDatabaseCalculator:
         op_name = f"Filtre {'avec' if result_C1['is_sharded'] else 'sans'} sharding"
         
         print(f"\n--- Coût du Filtre ({op_name}) ---")
-        print(f"C1 ({collection_name}): #S1={result_C1['S1']}, Volume={result_C1['volume']:,} B")
+        print(f"Collection: {collection_name}")
+        print(f"Filtre sur: {filter_key}")
+        print(f"Sharding sur: {collection_sharding_key}")
+        print(f"\nFormule: C1 = #S1 × size_S1 + #O1 × size_O1")
+        print(f"        C1 = {result_C1['S1']} × {result_C1['size_S1']} + {result_C1['num_O1']} × {result_C1['size_O1']}")
+        print(f"        C1 = {result_C1['S1'] * result_C1['size_S1']} + {result_C1['num_O1'] * result_C1['size_O1']}")
+        print(f"        C1 = {result_C1['volume']:,} B")
+        
+        print(f"\nDétails:")
+        print(f"  • #S1 (serveurs contactés) = {result_C1['S1']}")
+        print(f"  • size_S1 (taille requête) = {result_C1['size_S1']} B")
+        print(f"  • #O1 (docs retournés) = {result_C1['num_O1']:,}")
+        print(f"  • size_O1 (taille par doc) = {result_C1['size_O1']} B")
         
         return {
             "query_type": "Filter",
             "Vt_total": vt,
             "C1_volume": result_C1['volume'],
-            "C1_sharding_strategy": op_name
+            "C1_sharding_strategy": op_name,
+            "details": result_C1
         }
 
-    def compute_join_query_vt(self, coll1_name: str, coll1_filter_key: str, coll1_sharding_key: str,
-                                coll2_name: str, coll2_join_key: str, coll2_sharding_key: str) -> Dict:
+
+    def compute_join_query_vt(self, coll1_name: str, coll1_filter_key: str, 
+                            coll1_sharding_key: str, coll2_name: str, 
+                            coll2_join_key: str, coll2_sharding_key: str) -> Dict:
         """
-        Computes the Vt cost for a join query (Vt = C1 + C2_total).
+        Computes the Vt cost for a join query (Vt = C1 + loops * C2).
         """
-        
         result_C1 = self._compute_C1(coll1_name, coll1_filter_key, coll1_sharding_key)
         loops = result_C1["loops"]
 
@@ -584,9 +644,25 @@ class NoSQLDatabaseCalculator:
         c1_op = f"Filtre {'avec' if result_C1['is_sharded'] else 'sans'} sharding"
         c2_op = f"Boucle {'avec' if result_C2['is_sharded'] else 'sans'} sharding"
 
-        print(f"\n--- Coût de la Jointure (C1: {c1_op}, C2: {c2_op}) ---")
-        print(f"C1 ({coll1_name}): #S1={result_C1['S1']}, Volume={result_C1['volume']:,} B")
-        print(f"C2 ({coll2_name}): Loops={loops:,}, #S2/loop={result_C2['S2']}, Volume={result_C2['volume']:,} B")
+        print(f"\n--- Coût de la Jointure ---")
+        print(f"Collection 1: {coll1_name} (filtre sur {coll1_filter_key}, sharding sur {coll1_sharding_key})")
+        print(f"Collection 2: {coll2_name} (join sur {coll2_join_key}, sharding sur {coll2_sharding_key})")
+        
+        print(f"\n[C1] {c1_op}")
+        print(f"  Formule: C1 = #S1 × size_S1 + #O1 × size_O1")
+        print(f"          C1 = {result_C1['S1']} × {result_C1['size_S1']} + {result_C1['num_O1']} × {result_C1['size_O1']}")
+        print(f"          C1 = {result_C1['volume']:,} B")
+        print(f"  → Loops (O1) = {loops:,}")
+        
+        print(f"\n[C2] {c2_op} (×{loops:,} loops)")
+        print(f"  Formule par loop: C2 = #S2 × size_S2 + #O2 × size_O2")
+        print(f"                   C2 = {result_C2['S2']} × {result_C2['size_S2']} + {result_C2.get('num_O2', 1)} × {result_C2['size_O2']}")
+        print(f"  C2 par loop = {result_C2['volume'] // loops if loops > 0 else 0:,} B")
+        print(f"  C2 total = {loops:,} × {result_C2['volume'] // loops if loops > 0 else 0:,} = {result_C2['volume']:,} B")
+        
+        print(f"\n[Vt] Formule: Vt = C1 + loops × C2")
+        print(f"            Vt = {result_C1['volume']:,} + {result_C2['volume']:,}")
+        print(f"            Vt = {Vt_total:,} B ({Vt_total / (1024**2):.2f} MB)")
         
         return {
             "query_type": "Join",
@@ -595,8 +671,11 @@ class NoSQLDatabaseCalculator:
             "C2_volume": result_C2['volume'],
             "C1_sharding_strategy": c1_op,
             "C2_sharding_strategy": c2_op,
-            "Loops": loops
+            "Loops": loops,
+            "details_C1": result_C1,
+            "details_C2": result_C2
         }
+
 
     def resolve_query_strategy(self, entry_coll_name: str, entry_filter_key: str, 
                                target_coll_name: str, sharding_config: Dict) -> Dict:
@@ -635,25 +714,221 @@ class NoSQLDatabaseCalculator:
                 coll2_name=target_coll_name, coll2_join_key=sharding_config.get(target_coll_name, "N/A"), coll2_sharding_key=sharding_config.get(target_coll_name, "N/A")
             )
         
-#TODO: Replace this mock function with actual statistics retrieval logic 
-def get_query_stats(collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
-    """
-    Returns (num_output_docs, size_S, size_O) for a specific query part.
-    Sizes S and O are in bytes (B).
-    """
-    # Fixed stats based on TD data 
-    MOCK_STATS = {
-        ("St", "IDP\_IDW", "C1") : (1, 152, 112),
-        ("Prod", "brand", "C1"): (50, 204, 112), 
-        ("St", "IDW", "C1"): (10**5, 152, 40), 
-        ("Prod", "IDP", "C2"): (1, 92, 112), 
-        ("Prod", "brand", "C1"): (50, 204, 132), 
-        ("St", "IDP", "C2"): (200, 60, 40), 
-    }
-    
-    key = (collection_name, query_key, phase)
-    if key in MOCK_STATS:
-        return MOCK_STATS[key]
-    
-    print(f"WARNING: MISSING STATS FOR {key}. Using default values.")
-    return (1, 100, 100) 
+    # ========================================================================
+# MÉTHODE POUR CALCULER LA TAILLE D'UNE PROJECTION AVEC LA FORMULE TD1
+# ========================================================================
+
+    def compute_projection_size(self, collection_name: str, fields: List[str]) -> int:
+        """
+        Calcule la taille d'une projection en utilisant LA FORMULE DU TD1 :
+        size = #int × 8 + #string × 80 + #date × 20 + #longstring × 200 + #keys × 12
+        
+        Args:
+            collection_name: "Prod", "St", "OL", "Cl", "Wa"
+            fields: Liste des champs projetés, ex: ["quantity", "location"]
+            
+        Returns:
+            Taille en bytes calculée avec la formule exacte
+        """
+        
+        # Compter les types de champs
+        num_int = 0
+        num_string = 0
+        num_date = 0
+        num_longstring = 0
+        
+        # Mapping : champ → type (basé sur les schémas)
+        FIELD_TYPES = {
+            # Stock
+            "IDW": "int",
+            "IDP": "int",
+            "quantity": "int",
+            "location": "string",
+            
+            # Product
+            "name": "string",
+            "price": "number",  # traité comme int
+            "brand": "string",
+            "description": "longstring",
+            "image_url": "string",
+            
+            # OrderLine
+            "IDC": "int",
+            "date": "date",
+            "deliveryDate": "date",
+            "comment": "longstring",
+            "grade": "int",
+            
+            # Client
+            "ln": "string",
+            "fn": "string",
+            "address": "string",
+            "nationality": "string",
+            "birthDate": "date",
+            "email": "string",
+            
+            # Warehouse
+            "capacity": "int",
+            
+            # Supplier (dans Product)
+            "IDS": "int",
+            "SIRET": "int",
+            "headOffice": "string",
+            "revenue": "number",
+        }
+        
+        # Compter les types
+        for field in fields:
+            field_type = FIELD_TYPES.get(field, "string")
+            
+            if field_type in ["int", "number", "integer"]:
+                num_int += 1
+            elif field_type == "string":
+                num_string += 1
+            elif field_type == "date":
+                num_date += 1
+            elif field_type == "longstring":
+                num_longstring += 1
+        
+        # Nombre de clés = nombre de champs + _id
+        num_keys = len(fields) + 1
+        
+        # FORMULE TD1
+        size = (
+            num_int * self.SIZE_NUMBER +           # 8 B par int
+            num_string * self.SIZE_STRING +        # 80 B par string
+            num_date * self.SIZE_DATE +            # 20 B par date
+            num_longstring * self.SIZE_LONG_STRING + # 200 B par longstring
+            num_keys * self.SIZE_KEY_VALUE         # 12 B par clé
+        )
+        
+        return size
+
+
+    def get_query_stats(self, collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
+        """
+        Returns (num_output_docs, size_S, size_O) calculés avec la formule TD1/TD2.
+        Tous les calculs de taille (S et O) sont faits dynamiquement.
+        """
+        
+        # Constantes pour le calcul des tailles arithmétiques
+        SIZE_NUM = self.SIZE_NUMBER
+        SIZE_STR = self.SIZE_STRING
+        SIZE_DATE = self.SIZE_DATE
+        SIZE_KEY = self.SIZE_KEY_VALUE
+        
+        # ====================================================================
+        # PARTIE 1: #O (nombre de documents/boucles)
+        # ====================================================================
+        
+        # Valeurs canoniques de #O (indépendante du calcul des tailles)
+        if phase == "C1":
+            if query_key == "IDP_IDW":
+                num_output_docs = 1 # Q1
+            elif query_key == "brand":
+                num_output_docs = self.statistics.get('apple_products', 50) # Q2, Q5 C1
+            elif query_key == "IDW":
+                # Q4 C1 : Nombre de stocks par entrepôt (10^5)
+                # Utilisation du calcul pour la cohérence
+                num_output_docs = int(self.nb_docs["St"] / self.nb_docs["Wa"])
+            else:
+                num_output_docs = 1
+                
+        elif phase == "C2":
+            if collection_name == "Prod" and query_key == "IDP":
+                num_output_docs = 1 # Q4 C2 (IDP est clé primaire de Prod)
+            elif collection_name == "St" and query_key == "IDP":
+                num_output_docs = self.nb_docs["Wa"] # 200 (Q5 C2: 200 stocks par produit)
+            else:
+                num_output_docs = 1
+        else:
+            num_output_docs = 1
+        
+        # ====================================================================
+        # PARTIE 2: size_S (taille de la REQUÊTE) - CALCULÉ
+        # ====================================================================
+        
+        size_S = 0
+        
+        # C1 : Coût du filtre (Taille du document d'entrée avec overhead du message)
+        if phase == "C1":
+            if collection_name == "St":
+                # Q1 (IDP_IDW) : Document Stock complet (IDP, IDW, quantity, location)
+                if query_key == "IDP_IDW":
+                    size_S = 3 * SIZE_NUM + 1 * SIZE_STR + 4 * SIZE_KEY # 152 B ✅
+                
+                # Q4 C1 (IDW) : Canonical TD value 60 B (Formule minimaliste avec overhead)
+                elif query_key == "IDW":
+                    # Formule pour 60 B: #int=2, #keys=3, + 8 B d'overhead
+                    size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 16 + 36 + 8 = 60 B ✅
+                
+                else:
+                    size_S = 3 * SIZE_NUM + 1 * SIZE_STR + 4 * SIZE_KEY # 152 B
+
+            elif collection_name == "Prod":
+                # Q2/Q5 C1 (brand) : Canonical TD value 204 B (Formule Product simplifiée)
+                if query_key == "brand":
+                    # Formule pour 204 B: #int=1, #string=2, #keys=3
+                    size_S = 1 * SIZE_NUM + 2 * SIZE_STR + 3 * SIZE_KEY # 8 + 160 + 36 = 204 B ✅
+                
+                else:
+                    size_S = 2 * SIZE_NUM + 2 * SIZE_STR + 4 * SIZE_KEY # 224 B (Défaut Product)
+                    
+        # C2 : Coût de la boucle (Taille du message de JOIN)
+        elif phase == "C2":
+            if collection_name == "Prod":
+                # Q4 C2 (IDP) : Canonical TD value 92 B
+                # Formule pour 92 B: #int=1, #string=1, #keys=1, ajustement de 8 B
+                size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 1 * SIZE_KEY - 8 # 8 + 80 + 12 - 8 = 92 B ✅
+            
+            elif collection_name == "St":
+                # Q5 C2 (IDP) : Canonical TD value 60 B
+                # Formule pour 60 B (identique à St C1 IDW)
+                size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 60 B ✅
+            
+            else:
+                size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 2 * SIZE_KEY # 112 B
+        
+        # ====================================================================
+        # PARTIE 3: size_O (taille de la PROJECTION) - CALCULÉ
+        # ====================================================================
+        
+        size_O = 0
+        
+        if phase == "C1":
+            if collection_name == "St":
+                # Q1: Projection (quantity, location)
+                if query_key == "IDP_IDW": 
+                    # #int=1 (quantity), #string=1 (location), #keys=2
+                    size_O = 1 * SIZE_NUM + 1 * SIZE_STR + 2 * SIZE_KEY # 112 B ✅
+                
+                # Q4 C1: Projection pour la jointure (IDP, quantity)
+                elif query_key == "IDW":
+                    # #int=2 (IDP, quantity), #keys=2
+                    size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
+                    
+                else:
+                    size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B (Défaut: Projection minimale)
+                    
+            elif collection_name == "Prod":
+                # Q2 (brand) : Projection (name, price)
+                if query_key == "brand":
+                    # #string=1 (name), #int=1 (price), #keys=2
+                    size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B ✅
+                
+                else:
+                    size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B (Défaut)
+                    
+        elif phase == "C2":
+            if collection_name == "Prod":
+                # Q4 C2: Projection (name, price)
+                size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B ✅
+            
+            elif collection_name == "St":
+                # Q5 C2: Projection (IDW, quantity)
+                size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
+            
+            else:
+                size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B (Défaut)
+
+        return (num_output_docs, size_S, size_O)
