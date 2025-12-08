@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple, Optional
+import re
 
 class NoSQLDatabaseCalculator:
     """
@@ -23,6 +24,7 @@ class NoSQLDatabaseCalculator:
         self.collections = {}
         self.current_schema = current_schema
         self.schema_map = {}
+        self.num_shards = statistics.get('servers', 1000) # a vérifier
         
         # Mapping of denormlization schemas
         self.SCHEMAS = {
@@ -498,8 +500,6 @@ class NoSQLDatabaseCalculator:
         print(f"  • Distinct values/server: {stats['avg_distinct_values_per_server']:,.2f}")
 
 
-
-
     # ================================================================
     # QUERY COST (VT) CALCULATION - HOMEWORK 3.3
     # ================================================================
@@ -525,117 +525,136 @@ class NoSQLDatabaseCalculator:
             
             print(f"✓ Stored size for {coll_name} ({detected_type}): {result['doc_size']} B")
 
-
-
-    def _compute_C1(self, coll_name: str, filter_key: str, sharding_key: str) -> Dict:
-        """
-        Computes the first part of the cost (C1) for a filter.
-        """
-        # Pour Q1, le filter_key est "IDP_IDW" mais on doit parser la requête
-        # pour détecter qu'on filtre sur IDP ET IDW
-        
-        if filter_key == "IDP_IDW":
-            # Q1 : filtre sur IDP ET IDW
-            # R1.1 : sharding sur IDW → AVEC sharding (car IDW est dans le filtre)
-            # R1.2 : sharding sur IDP → AVEC sharding (car IDP est dans le filtre)
-            is_sharded = (sharding_key in ["IDP", "IDW"])
-        else:
-            is_sharded = (filter_key == sharding_key)
-        
-        num_servers_S1 = 1 if is_sharded else self.statistics.get('servers', 1000)
-        
-        num_output_docs_O1, size_S1, size_O1 = self.get_query_stats(coll_name, filter_key, "C1")
-        
-        C1_volume = (num_servers_S1 * size_S1) + (num_output_docs_O1 * size_O1)
-        
-        return {
-            "volume": C1_volume,
-            "loops": num_output_docs_O1,
-            "is_sharded": is_sharded,
-            "S1": num_servers_S1,
-            "size_S1": size_S1,
-            "size_O1": size_O1,
-            "num_O1": num_output_docs_O1
-        }
-
-
-    def _compute_C2(self, coll_name: str, join_key: str, sharding_key: str, loops: int) -> Dict:
-        """
-        Computes the second part of the cost (C2) for a join.
-        """
-        if loops == 0:
-            return {"volume": 0, "is_sharded": True, "S2": 0, "size_S2": 0, "size_O2": 0, "num_O2": 0}
-
-        is_sharded = (join_key == sharding_key)
-        
-        num_servers_S2 = 1 if is_sharded else self.statistics.get('servers', 1000)
-        
-        num_output_docs_O2, size_S2, size_O2 = self.get_query_stats(coll_name, join_key, "C2")
-        
-        C2_volume_per_loop = (num_servers_S2 * size_S2) + (num_output_docs_O2 * size_O2)
-        
-        total_C2_volume = loops * C2_volume_per_loop
-        
-        return {
-            "volume": total_C2_volume,
-            "is_sharded": is_sharded,
-            "S2": num_servers_S2,
-            "size_S2": size_S2,
-            "size_O2": size_O2,
-            "num_O2": num_output_docs_O2
-        }
-
-
-    
     def compute_filter_query_vt(self, collection_name: str, filter_key: str, 
-                            collection_sharding_key: str) -> Dict:
+                               collection_sharding_key: str,
+                               sql_query: str) -> Dict:
         """
         Computes the Vt cost for a simple filter query (Vt = C1).
+        
+        Args:
+            collection_name: Collection à interroger
+            filter_key: Clé utilisée dans le filtre WHERE
+            collection_sharding_key: Clé de sharding de la collection
+            sql_query: Requête SQL complète
+        
+        Returns:
+            Dict contenant les détails du coût
         """
-        result_C1 = self._compute_C1(collection_name, filter_key, collection_sharding_key)
+        # Déterminer si la requête est shardée
+        is_sharded = (filter_key == collection_sharding_key)
         
-        vt = result_C1["volume"]
-        op_name = f"Filtre {'avec' if result_C1['is_sharded'] else 'sans'} sharding"
+        # Calculer #S1 (nombre de shards contactés)
+        S1 = 1 if is_sharded else self.num_shards
         
+        # Appeler get_query_stats avec la requête SQL pour obtenir size_S et size_O
+        num_O1, size_S1, size_O1 = self.get_query_stats(
+            collection_name, 
+            filter_key, 
+            "C1",
+            sql_query
+        )
+        
+        # Calcul du volume C1
+        C1_volume = S1 * size_S1 + num_O1 * size_O1
+        
+        # Nom de l'opération
+        op_name = f"Filtre {'avec' if is_sharded else 'sans'} sharding"
+        
+        # Affichage des résultats
         print(f"\n--- Coût du Filtre ({op_name}) ---")
         print(f"Collection: {collection_name}")
         print(f"Filtre sur: {filter_key}")
         print(f"Sharding sur: {collection_sharding_key}")
         print(f"\nFormule: C1 = #S1 × size_S1 + #O1 × size_O1")
-        print(f"        C1 = {result_C1['S1']} × {result_C1['size_S1']} + {result_C1['num_O1']} × {result_C1['size_O1']}")
-        print(f"        C1 = {result_C1['S1'] * result_C1['size_S1']} + {result_C1['num_O1'] * result_C1['size_O1']}")
-        print(f"        C1 = {result_C1['volume']:,} B")
+        print(f"        C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
+        print(f"        C1 = {S1 * size_S1} + {num_O1 * size_O1}")
+        print(f"        C1 = {C1_volume:,} B")
         
         print(f"\nDétails:")
-        print(f"  • #S1 (serveurs contactés) = {result_C1['S1']}")
-        print(f"  • size_S1 (taille requête) = {result_C1['size_S1']} B")
-        print(f"  • #O1 (docs retournés) = {result_C1['num_O1']:,}")
-        print(f"  • size_O1 (taille par doc) = {result_C1['size_O1']} B")
+        print(f"  • #S1 (serveurs contactés) = {S1}")
+        print(f"  • size_S1 (taille requête) = {size_S1} B")
+        print(f"  • #O1 (docs retournés) = {num_O1:,}")
+        print(f"  • size_O1 (taille par doc) = {size_O1} B")
         
         return {
             "query_type": "Filter",
-            "Vt_total": vt,
-            "C1_volume": result_C1['volume'],
+            "Vt_total": C1_volume,
+            "C1_volume": C1_volume,
             "C1_sharding_strategy": op_name,
-            "details": result_C1
+            "C2_volume": 0,
+            "Loops": 0,
+            "details": {
+                "S1": S1,
+                "size_S1": size_S1,
+                "num_O1": num_O1,
+                "size_O1": size_O1,
+                "volume": C1_volume,
+                "is_sharded": is_sharded
+            }
         }
-
-
+    
     def compute_join_query_vt(self, coll1_name: str, coll1_filter_key: str, 
                             coll1_sharding_key: str, coll2_name: str, 
-                            coll2_join_key: str, coll2_sharding_key: str) -> Dict:
+                            coll2_join_key: str, coll2_sharding_key: str,
+                            sql_query: str) -> Dict:
         """
         Computes the Vt cost for a join query (Vt = C1 + loops * C2).
+        
+        Args:
+            coll1_name: Collection 1 (entrée)
+            coll1_filter_key: Clé de filtre pour C1
+            coll1_sharding_key: Clé de sharding de C1
+            coll2_name: Collection 2 (cible du join)
+            coll2_join_key: Clé de jointure pour C2
+            coll2_sharding_key: Clé de sharding de C2
+            sql_query: Requête SQL complète
         """
-        result_C1 = self._compute_C1(coll1_name, coll1_filter_key, coll1_sharding_key)
-        loops = result_C1["loops"]
-
-        result_C2 = self._compute_C2(coll2_name, coll2_join_key, coll2_sharding_key, loops)
+        # === C1 : Requête initiale sur collection 1 ===
+        is_sharded_C1 = (coll1_filter_key == coll1_sharding_key)
+        S1 = 1 if is_sharded_C1 else self.num_shards
         
-        Vt_total = result_C1["volume"] + result_C2["volume"]
+        # Calculer size_S1, size_O1, et #O1 avec la requête SQL complète
+        num_O1, size_S1, size_O1 = self.get_query_stats(
+            coll1_name, 
+            coll1_filter_key, 
+            "C1",
+            sql_query
+        )
         
-        c1_op = f"Filtre {'avec' if result_C1['is_sharded'] else 'sans'} sharding"
-        c2_op = f"Boucle {'avec' if result_C2['is_sharded'] else 'sans'} sharding"
+        C1_volume = S1 * size_S1 + num_O1 * size_O1
+        loops = num_O1  # Nombre de loops = nombre de documents retournés par C1
+        
+        # === C2 : Requête de jointure sur collection 2 ===
+        is_sharded_C2 = (coll2_join_key == coll2_sharding_key)
+        S2 = 1 if is_sharded_C2 else self.num_shards
+        
+        # Pour C2, on calcule différemment size_S2 et size_O2
+        print(f"\n  → Computing C2 sizes:")
+        
+        # size_S2: requête de lookup avec JOIN (SELECT + JOIN + WHERE converti)
+        # On utilise la requête complète pour extraire les champs nécessaires au lookup
+        num_O2, size_S2, _ = self.get_query_stats(
+            coll2_name, 
+            coll2_join_key, 
+            "C2",
+            sql_query
+        )
+        
+        # size_O2: PROJECTION sans JOIN (uniquement les champs SELECT de coll2)
+        # On retire le JOIN pour ne garder que les champs projetés
+        query_projection_c2 = self._create_projection_query(sql_query, coll2_name, remove_join=True)
+        print(f"    Projection C2 (without JOIN): {query_projection_c2}")
+        counts_o2 = self.analyze_schema_fields(coll2_name, query=query_projection_c2)
+        size_O2 = self.compute_size_from_counts(counts_o2)
+        
+        C2_per_loop = S2 * size_S2 + num_O2 * size_O2
+        C2_volume = loops * C2_per_loop
+        
+        Vt_total = C1_volume + C2_volume
+        
+        # === Affichage des résultats ===
+        c1_op = f"Filtre {'avec' if is_sharded_C1 else 'sans'} sharding"
+        c2_op = f"Boucle {'avec' if is_sharded_C2 else 'sans'} sharding"
 
         print(f"\n--- Coût de la Jointure ---")
         print(f"Collection 1: {coll1_name} (filtre sur {coll1_filter_key}, sharding sur {coll1_sharding_key})")
@@ -643,38 +662,61 @@ class NoSQLDatabaseCalculator:
         
         print(f"\n[C1] {c1_op}")
         print(f"  Formule: C1 = #S1 × size_S1 + #O1 × size_O1")
-        print(f"          C1 = {result_C1['S1']} × {result_C1['size_S1']} + {result_C1['num_O1']} × {result_C1['size_O1']}")
-        print(f"          C1 = {result_C1['volume']:,} B")
+        print(f"          C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
+        print(f"          C1 = {C1_volume:,} B")
         print(f"  → Loops (O1) = {loops:,}")
         
         print(f"\n[C2] {c2_op} (×{loops:,} loops)")
         print(f"  Formule par loop: C2 = #S2 × size_S2 + #O2 × size_O2")
-        print(f"                   C2 = {result_C2['S2']} × {result_C2['size_S2']} + {result_C2.get('num_O2', 1)} × {result_C2['size_O2']}")
-        print(f"  C2 par loop = {result_C2['volume'] // loops if loops > 0 else 0:,} B")
-        print(f"  C2 total = {loops:,} × {result_C2['volume'] // loops if loops > 0 else 0:,} = {result_C2['volume']:,} B")
+        print(f"                   C2 = {S2} × {size_S2} + {num_O2} × {size_O2}")
+        print(f"  C2 par loop = {C2_per_loop:,} B")
+        print(f"  C2 total = {loops:,} × {C2_per_loop:,} = {C2_volume:,} B")
         
         print(f"\n[Vt] Formule: Vt = C1 + loops × C2")
-        print(f"            Vt = {result_C1['volume']:,} + {result_C2['volume']:,}")
+        print(f"            Vt = {C1_volume:,} + {C2_volume:,}")
         print(f"            Vt = {Vt_total:,} B ({Vt_total / (1024**2):.2f} MB)")
         
         return {
             "query_type": "Join",
             "Vt_total": Vt_total,
-            "C1_volume": result_C1['volume'],
-            "C2_volume": result_C2['volume'],
+            "C1_volume": C1_volume,
+            "C2_volume": C2_volume,
             "C1_sharding_strategy": c1_op,
             "C2_sharding_strategy": c2_op,
             "Loops": loops,
-            "details_C1": result_C1,
-            "details_C2": result_C2
+            "details_C1": {
+                "S1": S1,
+                "size_S1": size_S1,
+                "num_O1": num_O1,
+                "size_O1": size_O1,
+                "volume": C1_volume,
+                "is_sharded": is_sharded_C1,
+                "loops": loops
+            },
+            "details_C2": {
+                "S2": S2,
+                "size_S2": size_S2,
+                "num_O2": num_O2,
+                "size_O2": size_O2,
+                "volume": C2_volume,
+                "is_sharded": is_sharded_C2
+            }
         }
 
-
+    
     def resolve_query_strategy(self, entry_coll_name: str, entry_filter_key: str, 
-                               target_coll_name: str, sharding_config: Dict) -> Dict:
+                               target_coll_name: str, sharding_config: Dict,
+                               sql_query: str) -> Dict:
         """
         Determines if the query is solved as a simple FILTER or requires a JOIN
         based on the current denormalization schema (DB1/DB2/DB3).
+        
+        Args:
+            entry_coll_name: Collection d'entrée
+            entry_filter_key: Clé de filtre
+            target_coll_name: Collection cible (pour le join)
+            sharding_config: Configuration du sharding
+            sql_query: Requête SQL complète
         """
         
         # 1. Check for embedding in the entry collection (e.g., P in S -> DB3 for Q4)
@@ -684,7 +726,8 @@ class NoSQLDatabaseCalculator:
             return self.compute_filter_query_vt(
                 collection_name=entry_coll_name,
                 filter_key=entry_filter_key,
-                collection_sharding_key=sharding_config.get(entry_coll_name, "N/A")
+                collection_sharding_key=sharding_config.get(entry_coll_name, "N/A"),
+                sql_query=sql_query
             )
 
         # 2. Check for embedding in the target collection (e.g., S in P -> DB2 for Q4)
@@ -695,7 +738,8 @@ class NoSQLDatabaseCalculator:
             return self.compute_filter_query_vt(
                 collection_name=target_coll_name,
                 filter_key=entry_filter_key,      
-                collection_sharding_key=sharding_config.get(target_coll_name, "N/A")
+                collection_sharding_key=sharding_config.get(target_coll_name, "N/A"),
+                sql_query=sql_query
             )
 
         # 3. Default case: JOIN is required (DB1 or non-embedded model)
@@ -703,124 +747,94 @@ class NoSQLDatabaseCalculator:
             print(f"\n[{self.current_schema}] Normalized Model (DB1) or non-embedded configuration: JOIN required.")
             
             return self.compute_join_query_vt(
-                coll1_name=entry_coll_name, coll1_filter_key=entry_filter_key, coll1_sharding_key=sharding_config.get(entry_coll_name, "N/A"),
-                coll2_name=target_coll_name, coll2_join_key=sharding_config.get(target_coll_name, "N/A"), coll2_sharding_key=sharding_config.get(target_coll_name, "N/A")
+                coll1_name=entry_coll_name, 
+                coll1_filter_key=entry_filter_key, 
+                coll1_sharding_key=sharding_config.get(entry_coll_name, "N/A"),
+                coll2_name=target_coll_name, 
+                coll2_join_key=sharding_config.get(target_coll_name, "N/A"), 
+                coll2_sharding_key=sharding_config.get(target_coll_name, "N/A"),
+                sql_query=sql_query
             )
-        
-    # ========================================================================
-# MÉTHODE POUR CALCULER LA TAILLE D'UNE PROJECTION AVEC LA FORMULE TD1
-# ========================================================================
 
-    def compute_projection_size(self, collection_name: str, fields: List[str]) -> int:
+        
+    def extract_query_context(self, query: str, collection_name: str) -> Dict[str, List[str]]:
         """
-        Calcule la taille d'une projection en utilisant LA FORMULE DU TD1 :
-        size = #int × 8 + #string × 80 + #date × 20 + #longstring × 200 + #keys × 12
+        Extrait les champs utilisés dans SELECT, WHERE et JOIN pour une collection donnée.
         
         Args:
-            collection_name: "Prod", "St", "OL", "Cl", "Wa"
-            fields: Liste des champs projetés, ex: ["quantity", "location"]
-            
+            query: Requête SQL complète
+            collection_name: Nom de la collection (pour filtrer les alias)
+        
         Returns:
-            Taille en bytes calculée avec la formule exacte
+            Dict avec 'select', 'where', 'join' contenant les listes de champs
         """
+        context = {'select': [], 'where': [], 'join': []}
         
-        # Compter les types de champs
-        num_int = 0
-        num_string = 0
-        num_date = 0
-        num_longstring = 0
+        # Nettoyer la requête
+        query = query.strip().replace('\n', ' ')
+        query = re.sub(r'\s+', ' ', query)
         
-        # Mapping : champ → type (basé sur les schémas)
-        FIELD_TYPES = {
-            # Stock
-            "IDW": "int",
-            "IDP": "int",
-            "quantity": "int",
-            "location": "string",
-            
-            # Product
-            "name": "string",
-            "price": "number",  # traité comme int
-            "brand": "string",
-            "description": "longstring",
-            "image_url": "string",
-            
-            # OrderLine
-            "IDC": "int",
-            "date": "date",
-            "deliveryDate": "date",
-            "comment": "longstring",
-            "grade": "int",
-            
-            # Client
-            "ln": "string",
-            "fn": "string",
-            "address": "string",
-            "nationality": "string",
-            "birthDate": "date",
-            "email": "string",
-            
-            # Warehouse
-            "capacity": "int",
-            
-            # Supplier (dans Product)
-            "IDS": "int",
-            "SIRET": "int",
-            "headOffice": "string",
-            "revenue": "number",
-        }
+        # Trouver l'alias de la collection
+        # Ex: "FROM Product P" ou "JOIN Stock S"
+        alias_pattern = rf'\b(?:FROM|JOIN)\s+{collection_name}\s+(\w+)'
+        alias_match = re.search(alias_pattern, query, re.IGNORECASE)
+        alias = alias_match.group(1) if alias_match else collection_name[0]
         
-        # Compter les types
-        for field in fields:
-            field_type = FIELD_TYPES.get(field, "string")
-            
-            if field_type in ["int", "number", "integer"]:
-                num_int += 1
-            elif field_type == "string":
-                num_string += 1
-            elif field_type == "date":
-                num_date += 1
-            elif field_type == "longstring":
-                num_longstring += 1
+        # 1. Extraire les champs du SELECT
+        select_pattern = r'SELECT\s+(.*?)\s+FROM'
+        select_match = re.search(select_pattern, query, re.IGNORECASE)
+        if select_match:
+            select_clause = select_match.group(1)
+            # Extraire les champs avec l'alias de notre collection
+            # Ex: "P.name, P.price" -> ['name', 'price']
+            field_pattern = rf'{alias}\.(\w+)'
+            context['select'] = re.findall(field_pattern, select_clause)
         
-        # Nombre de clés = nombre de champs + _id
-        num_keys = len(fields) + 1
+        # 2. Extraire les champs du WHERE
+        where_pattern = r'WHERE\s+(.*?)(?:;|$)'
+        where_match = re.search(where_pattern, query, re.IGNORECASE)
+        if where_match:
+            where_clause = where_match.group(1)
+            field_pattern = rf'{alias}\.(\w+)'
+            context['where'] = re.findall(field_pattern, where_clause)
         
-        # FORMULE TD1
-        size = (
-            num_int * self.SIZE_NUMBER +           # 8 B par int
-            num_string * self.SIZE_STRING +        # 80 B par string
-            num_date * self.SIZE_DATE +            # 20 B par date
-            num_longstring * self.SIZE_LONG_STRING + # 200 B par longstring
-            num_keys * self.SIZE_KEY_VALUE         # 12 B par clé
-        )
+        # 3. Extraire les champs du JOIN (ON clause)
+        # Ex: "ON S.IDP = P.IDP" ou "ON P.IDP = S.IDP"
+        join_pattern = rf'ON\s+(?:{alias}\.(\w+)\s*=\s*\w+\.\w+|\w+\.\w+\s*=\s*{alias}\.(\w+))'
+        join_matches = re.finditer(join_pattern, query, re.IGNORECASE)
+        for match in join_matches:
+            # Le champ peut être dans le groupe 1 ou 2 selon l'ordre
+            field = match.group(1) if match.group(1) else match.group(2)
+            if field:
+                context['join'].append(field)
         
-        return size
+        return context
 
 
-    from typing import Tuple
-    from typing import Dict, List, Tuple, Optional
-
-    from typing import Dict, List, Tuple, Optional
-
-# --- analyze_schema_fields (Méthode de NoSQLDatabaseCalculator) ---
-    def analyze_schema_fields(self, collection_name: str, field_list: Optional[List[str]] = None) -> Dict:
+    
+    # --- analyze_schema_fields (Méthode de NoSQLDatabaseCalculator) --- context=queries     
+    def analyze_schema_fields(self, collection_name: str, 
+                             field_list: Optional[List[str]] = None,
+                             query: Optional[str] = None) -> Dict:
         """
-        Analyse un schéma pour compter les types de champs scalaires de premier niveau. 
-        Si field_list est fourni, compte seulement ces champs (projection/requête filtrée). 
-        Sinon, compte tous les champs (document complet).
-
-        Le nombre de clés est ajusté pour s'aligner sur la formule de calcul de taille du TD:
-        - Projection (size O): #clés = #champs projetés (pour obtenir 12B/champ projeté).
-        - Document complet (size S): #clés = #champs + 1 (_id), sauf pour St où c'est #champs.
+        Analyse un schéma pour compter les types de champs scalaires de premier niveau.
+        
+        Args:
+            collection_name: Nom de la collection à analyser
+            field_list: Liste des champs à inclure (pour projection simple)
+            query: Requête SQL complète (pour extraction automatique du contexte)
+        
+        Returns:
+            Dict contenant les comptages par type de champ
         """
         if collection_name not in self.collections:
-            return {'num_int': 0, 'num_string': 0, 'num_date': 0, 'num_longstring': 0, 'num_keys': 0}
+            return {'num_int': 0, 'num_string': 0, 'num_date': 0, 
+                    'num_longstring': 0, 'num_keys': 0}
 
         schema = self.collections[collection_name]['schema']
         all_fields = {}
 
-        # 1. Extraction des champs scalaires de premier niveau
+        # 1. Extraction des champs scalaires de premier niveau avec leur type
         for field_name, field_schema in schema.get("properties", {}).items():
             node_type = field_schema.get("type")
             if node_type in ["integer", "number"]:
@@ -833,36 +847,61 @@ class NoSQLDatabaseCalculator:
             elif node_type == "date":
                 all_fields[field_name] = "date"
 
-        # 2. Comptage des scalaires
-        num_int, num_string, num_date, num_longstring = 0, 0, 0, 0
+        # 2. Déterminer les champs à compter selon le contexte
+        fields_to_count = set()
+        context_info = ""
         
-        if field_list:
-            # PROJECTION (size O) ou REQUÊTE FILTRÉE (size S basé sur les champs filtrés)
-            for field_name in field_list:
-                field_type = all_fields.get(field_name)
-                if field_type == "int": num_int += 1
-                elif field_type == "string": num_string += 1
-                elif field_type == "date": num_date += 1
-                elif field_type == "longstring": num_longstring += 1
-            
-            # #clés = #champs projetés (Approximation pour la projection/requête minimale)
-            num_keys = len(field_list)
-            
+        if query:
+            # Extraction automatique du contexte depuis la requête
+            context = self.extract_query_context(query, collection_name)
+            for clause_fields in context.values():
+                if clause_fields:
+                    fields_to_count.update(clause_fields)
+            context_info = f" | Context: {context}"
+        elif field_list:
+            # Projection simple ou liste explicite
+            fields_to_count = set(field_list)
+            context_info = f" | Fields: {field_list}"
         else:
-            # DOCUMENT COMPLET (size S)
-            for field_type in all_fields.values():
-                if field_type == "int": num_int += 1
-                elif field_type == "string": num_string += 1
-                elif field_type == "date": num_date += 1
-                elif field_type == "longstring": num_longstring += 1
+            # Document complet
+            fields_to_count = set(all_fields.keys())
+            context_info = " | Full document"
+
+        # 3. Comptage des scalaires pour les champs sélectionnés
+        num_int, num_string, num_date, num_longstring = 0, 0, 0, 0
+        fields_counted = []
+
+        for field_name in fields_to_count:
+            field_type = all_fields.get(field_name)
+            if field_type == "int":
+                num_int += 1
+            elif field_type == "string":
+                num_string += 1
+            elif field_type == "date":
+                num_date += 1
+            elif field_type == "longstring":
+                num_longstring += 1
             
-            # #clés = #champs + 1 (_id)
-            num_keys = len(all_fields) + 1 
+            if field_type:
+                fields_counted.append(f"{field_name} ({field_type})")
+
+        # 4. Calcul du nombre de clés
+        if query or field_list:
+            # Pour projection/requête : #clés = #champs comptés
+            num_keys = len(fields_counted)
+        else:
+            # Pour document complet : #clés = #champs + 1 (_id)
+            num_keys = len(all_fields) + 1
             
-            # Ajustement pour St (DB1) : 4 clés pour 4 champs scalaires (pour obtenir 152B)
+            # Ajustement spécifique pour St (DB1)
             if collection_name == "St":
                 num_keys = len(all_fields)
-                
+
+        # 5. Log pour debugging
+        print(f"  [ANALYSIS] {collection_name} (Fields: {len(fields_counted)}){context_info}:")
+        print(f"    - Champs comptés: {', '.join(fields_counted) if fields_counted else 'none'}")
+        print(f"    - Counts: I:{num_int}, S:{num_string}, D:{num_date}, L:{num_longstring}, K:{num_keys}")
+            
         return {
             'num_int': num_int, 
             'num_string': num_string, 
@@ -888,128 +927,118 @@ class NoSQLDatabaseCalculator:
             counts.get('num_keys', 0) * self.SIZE_KEY_VALUE 
         )
 
-    # ----------------------------------------------------------------------
-
-    # --- get_query_stats (Méthode de NoSQLDatabaseCalculator) ---
-    def get_query_stats(self, collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
+    # ----------------------------------------------------------------------    
+    def get_query_stats(self, collection_name: str, query_key: str, phase: str, 
+                       sql_query: str) -> Tuple[int, int, int]:
         """
         Retourne (#OutputDocs, size_S, size_O) en LISANT les schémas.
-        AUCUNE valeur de taille ou de compte de champs codée en dur. Tout est déduit 
-        des schémas et des listes de champs (field_list) pour modéliser la requête/projection.
+        
+        Args:
+            collection_name: Nom de la collection à analyser
+            query_key: Clé de la requête (ex: "IDP_IDW", "brand", etc.)
+            phase: Phase de la requête ("C1" ou "C2")
+            sql_query: Requête SQL complète (fournie par QUERIES[query_name])
+        
+        Returns:
+            Tuple (num_output_docs, size_S, size_O)
         """
         
+        print(f"\n[GET_QUERY_STATS] {collection_name} | {query_key} | {phase}")
+        print(f"  SQL Query: {sql_query}")
+        
         # ====================================================================
-        # PARTIE 1: #O (nombre de documents)
+        # PARTIE 1: #O (nombre de documents) - Inchangé
         # ====================================================================
         if phase == "C1":
-            if query_key == "IDP_IDW": num_output_docs = 1
-            elif query_key == "brand": num_output_docs = self.statistics.get('apple_products', 50)
-            elif query_key == "date": num_output_docs = int(self.nb_docs["OL"] / self.statistics.get('dates_per_year', 365))
-            elif query_key == "IDW": num_output_docs = self.nb_docs["Prod"]
-            elif query_key == "IDP": num_output_docs = 1
-            elif query_key == "IDC": num_output_docs = int(self.nb_docs["OL"] / self.nb_docs["Cl"])
-            else: num_output_docs = 1
-        elif phase == "C2":
-            if collection_name == "Prod" and query_key == "IDP": num_output_docs = 1
-            elif collection_name == "St" and query_key == "IDP": num_output_docs = self.nb_docs["Wa"]
-            else: num_output_docs = 1
-        else: num_output_docs = 1
-        
-        # ====================================================================
-        # PARTIE 2: size_S (taille de la REQUÊTE) - Calculée dynamiquement
-        # ====================================================================
-        
-        size_S = 0
-        field_list_S = []
-        
-        if phase == "C1":
-            if query_key == "IDP_IDW":
-                # Q1 C1: Full Stock document size.
-                counts = self.analyze_schema_fields("St", None)
-                size_S = self.compute_size_from_counts(counts) # = 152 B (grâce à analyze_schema_fields)
-                
-            elif collection_name == "Prod" and query_key == "brand":
-                # Q2 C1: Filtre sur brand. On modélise le message de requête par les champs filtrés.
-                field_list_S = ["IDP", "name", "brand", "price"]
-                
-            elif collection_name == "OL" and query_key == "date":
-                # Q3 C1: Filtre sur date. On modélise par les champs de filtre.
-                field_list_S = ["IDP", "IDC", "date"] # Modélisé pour donner 72 B
-                
-            elif collection_name == "St" and self.current_schema == "DB3" and query_key == "IDW":
-                # Q4 DB3 C1: Filtre minimal sur St.IDW. Modélisé par les clés de jointure/filtre.
-                field_list_S = ["IDW", "IDP", "location"] # 3 champs, 3 clés.
-                
-            elif collection_name == "Prod" and query_key == "IDP":
-                # Q5 C1: Requête minimale Product (Lookup).
-                field_list_S = ["IDP"] 
-            
-            else:
-                # Fallback (e.g., Q4 DB1, DB2, Prod/St complet) : document complet
-                counts = self.analyze_schema_fields(collection_name, None)
-                size_S = self.compute_size_from_counts(counts)
-                
-        else: # C2 - Join Phase
-            if collection_name == "Prod":
-                # C2 Lookup Prod by IDP.
-                field_list_S = ["IDP"] 
-            elif collection_name == "St":
-                # C2 Lookup St by IDP.
-                field_list_S = ["IDP", "IDW"]
-            else:
-                # Fallback
-                counts = self.analyze_schema_fields(collection_name, None)
-                size_S = self.compute_size_from_counts(counts)
-
-        # Si une liste de champs a été définie, calculer size_S à partir d'elle.
-        if field_list_S and size_S == 0:
-            counts = self.analyze_schema_fields(collection_name, field_list_S)
-            size_S = self.compute_size_from_counts(counts)
-        
-        # ====================================================================
-        # PARTIE 3: size_O (taille de la PROJECTION) - Calculée dynamiquement
-        # ====================================================================
-        
-        size_O = 0
-        field_list_O = []
-        
-        if collection_name == "St":
-            if query_key in ["IDP_IDW", "IDP"]: 
-                field_list_O = ["quantity", "location"] # 1 str, 1 int -> 112 B
+            if query_key == "IDP_IDW": 
+                num_output_docs = 1
+            elif query_key == "brand": 
+                num_output_docs = self.statistics.get('apple_products', 50)
+            elif query_key == "date": 
+                num_output_docs = int(self.nb_docs["OL"] / self.statistics.get('dates_per_year', 365))
             elif query_key == "IDW": 
-                field_list_O = ["IDP", "quantity"] # 2 int -> 40 B
-                
-        elif collection_name == "Prod":
-            field_list_O = ["name", "price"] # 1 str, 1 int -> 112 B
-                
-        elif collection_name == "OL":
-            field_list_O = ["IDP", "quantity"] # 2 int -> 40 B
-
+                num_output_docs = self.nb_docs["Prod"]
+            elif query_key == "IDP": 
+                num_output_docs = 1
+            elif query_key == "IDC": 
+                num_output_docs = int(self.nb_docs["OL"] / self.nb_docs["Cl"])
+            else: 
+                num_output_docs = 1
+        elif phase == "C2":
+            if collection_name == "Prod" and query_key == "IDP": 
+                num_output_docs = 1
+            elif collection_name == "St" and query_key == "IDP": 
+                num_output_docs = self.nb_docs["Wa"]
+            else: 
+                num_output_docs = 1
+        else: 
+            num_output_docs = 1
+        
+        # ====================================================================
+        # PARTIE 2: size_S (taille de la REQUÊTE avec WHERE + JOIN)
+        # ====================================================================
+        
+        print(f"\n  → Computing size_S (full query with WHERE + JOIN):")
+        counts_s = self.analyze_schema_fields(collection_name, query=sql_query)
+        size_S = self.compute_size_from_counts(counts_s)
+        
+        # ====================================================================
+        # PARTIE 3: size_O (taille de la PROJECTION - SELECT uniquement)
+        # ====================================================================
+        
+        # Créer une version de la requête sans WHERE pour la projection
+        query_projection = self._create_projection_query(sql_query, collection_name, remove_join=False)
+        
+        print(f"\n  → Computing size_O (projection - SELECT only):")
+        print(f"    Projection query: {query_projection}")
+        counts_o = self.analyze_schema_fields(collection_name, query=query_projection)
+        size_O = self.compute_size_from_counts(counts_o)
+        
+        # ====================================================================
+        # CAS SPÉCIAUX
+        # ====================================================================
+        
         # Cas spécial Q4 DB3 (Projection agrégée : name + quantity)
         if collection_name == "St" and query_key == "IDW" and self.current_schema == "DB3":
-            # On ne peut pas calculer cette projection agrégée directement. On simule les champs projetés.
-            # Name vient de Prod (string), quantity vient de St (int).
-            # On utilise une collection 'virtuelle' avec les deux champs.
-            counts = self.analyze_schema_fields("Prod", ["name"])
-            counts_st = self.analyze_schema_fields("St", ["quantity"])
+            print("\n  [SPECIAL CASE] Q4 DB3 - Aggregated projection (name + quantity)")
+            counts_name = self.analyze_schema_fields("Prod", field_list=["name"])
+            counts_qty = self.analyze_schema_fields("St", field_list=["quantity"])
             
-            # On fusionne les comptes (1 int, 1 string) et on prend la moyenne des clés (2)
-            counts = {
-                'num_int': counts_st['num_int'], 
-                'num_string': counts['num_string'], 
+            counts_o = {
+                'num_int': counts_qty['num_int'], 
+                'num_string': counts_name['num_string'], 
                 'num_date': 0, 
                 'num_longstring': 0, 
-                'num_keys': 2 
+                'num_keys': 2
             }
-            size_O = self.compute_size_from_counts(counts)
+            size_O = self.compute_size_from_counts(counts_o)
         
-        elif field_list_O:
-            counts = self.analyze_schema_fields(collection_name, field_list_O)
-            size_O = self.compute_size_from_counts(counts)
+        print(f"\n  ✓ Results: #O={num_output_docs}, size_S={size_S}B, size_O={size_O}B")
         
-        else:
-            # Fallback minimal
-            counts = self.analyze_schema_fields(collection_name, ["IDP"])
-            size_O = self.compute_size_from_counts(counts)
-            
         return (num_output_docs, size_S, size_O)
+    
+    def _create_projection_query(self, sql_query: str, collection_name: str, 
+                                 remove_join: bool = False) -> str:
+        """
+        Crée une requête de projection en retirant WHERE (et optionnellement JOIN).
+        
+        Args:
+            sql_query: Requête SQL complète
+            collection_name: Nom de la collection
+            remove_join: Si True, retire aussi la clause JOIN (pour size_O en phase C2)
+        
+        Returns:
+            Requête SQL sans clause WHERE (et sans JOIN si remove_join=True)
+        """
+        # Retirer la clause WHERE
+        query_without_where = re.sub(r'\s+WHERE\s+.*?(;|$)', r'\1', sql_query, flags=re.IGNORECASE)
+        
+        if remove_join:
+            # Retirer aussi la clause JOIN (pour C2 projection - on ne garde que SELECT)
+            query_without_join = re.sub(r'\s+JOIN\s+.*?ON\s+.*?(?=WHERE|;|$)', '', query_without_where, flags=re.IGNORECASE)
+            return query_without_join.strip()
+        
+        return query_without_where.strip()
+
+    
+

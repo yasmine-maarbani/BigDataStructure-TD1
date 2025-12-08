@@ -251,7 +251,8 @@ def run_test_case(calculator: NoSQLDatabaseCalculator, query_name: str, strategy
     Executes a Qx/R.x test case using the query parser and generic resolver.
     """
     
-    sql_query = QUERIES[query_name]
+    
+    sql_query = QUERIES[query_name]  # ← On récupère la requête SQL
     query_params = parse_sql_query(sql_query)
     sharding_config = SHARDING_STRATEGIES[strategy_name]
     
@@ -270,7 +271,8 @@ def run_test_case(calculator: NoSQLDatabaseCalculator, query_name: str, strategy
         result = calculator.compute_filter_query_vt(
             collection_name=entry_coll_name,
             filter_key=entry_filter_key,
-            collection_sharding_key=sharding_config.get(entry_coll_name, "N/A")
+            collection_sharding_key=sharding_config.get(entry_coll_name, "N/A"),
+            sql_query=sql_query  
         )
     else:
         # Join Case (Q4, Q5): Use the generic solver
@@ -278,10 +280,11 @@ def run_test_case(calculator: NoSQLDatabaseCalculator, query_name: str, strategy
             entry_coll_name=entry_coll_name,
             entry_filter_key=entry_filter_key,
             target_coll_name=target_coll_name,
-            sharding_config=sharding_config
+            sharding_config=sharding_config,
+            sql_query=sql_query  
         )
 
-    # Output Summary
+    # Output Summary (inchangé)
     print("\n" + "="*80)
     print(f"[RÉSUMÉ DES COÛTS]")
     print("="*80)
@@ -294,7 +297,6 @@ def run_test_case(calculator: NoSQLDatabaseCalculator, query_name: str, strategy
     print("="*80)
     
     return result
-
 
 def setup_database(schema_name: str) -> NoSQLDatabaseCalculator:
     """
