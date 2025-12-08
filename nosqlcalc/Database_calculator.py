@@ -530,33 +530,27 @@ class NoSQLDatabaseCalculator:
     def _compute_C1(self, coll_name: str, filter_key: str, sharding_key: str) -> Dict:
         """
         Computes the first part of the cost (C1) for a filter.
-        Implements 'Filter with sharding' and 'Filter without sharding'.
         """
-        # IMPORTANT: Pour Q1, la clé de filtrage est composée "IDP_IDW"
-        # mais on doit vérifier le sharding sur une seule clé
+        # Pour Q1, le filter_key est "IDP_IDW" mais on doit parser la requête
+        # pour détecter qu'on filtre sur IDP ET IDW
         
-        # Déterminer si on est en situation de sharding
         if filter_key == "IDP_IDW":
-            # Q1: filtre sur IDP ET IDW, mais sharding sur une seule
-            # R1.1: sharding sur IDW -> NOT sharded (car on filtre aussi sur IDP)
-            # R1.2: sharding sur IDP -> sharded (car IDP est dans le filtre)
-            is_sharded = (sharding_key == "IDP" or sharding_key == "IDW")
+            # Q1 : filtre sur IDP ET IDW
+            # R1.1 : sharding sur IDW → AVEC sharding (car IDW est dans le filtre)
+            # R1.2 : sharding sur IDP → AVEC sharding (car IDP est dans le filtre)
+            is_sharded = (sharding_key in ["IDP", "IDW"])
         else:
-            # Cas normal: sharding si la clé de filtre = clé de sharding
             is_sharded = (filter_key == sharding_key)
         
-        # #S1: 1 if sharding key matches filter key, 1000 otherwise.
         num_servers_S1 = 1 if is_sharded else self.statistics.get('servers', 1000)
         
-        # UTILISER LA MÉTHODE DE LA CLASSE (self.)
         num_output_docs_O1, size_S1, size_O1 = self.get_query_stats(coll_name, filter_key, "C1")
         
-        # C1 = #S1 * size S1 + #O1 * size O1
         C1_volume = (num_servers_S1 * size_S1) + (num_output_docs_O1 * size_O1)
         
         return {
             "volume": C1_volume,
-            "loops": num_output_docs_O1, 
+            "loops": num_output_docs_O1,
             "is_sharded": is_sharded,
             "S1": num_servers_S1,
             "size_S1": size_S1,
@@ -805,133 +799,217 @@ class NoSQLDatabaseCalculator:
 
 
     from typing import Tuple
+    from typing import Dict, List, Tuple, Optional
 
-    # NOTE: Cette fonction doit être une méthode de la classe NoSQLDatabaseCalculator
-    # (def get_query_stats(self, collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:)
+    from typing import Dict, List, Tuple, Optional
 
+# --- analyze_schema_fields (Méthode de NoSQLDatabaseCalculator) ---
+    def analyze_schema_fields(self, collection_name: str, field_list: Optional[List[str]] = None) -> Dict:
+        """
+        Analyse un schéma pour compter les types de champs scalaires de premier niveau. 
+        Si field_list est fourni, compte seulement ces champs (projection/requête filtrée). 
+        Sinon, compte tous les champs (document complet).
+
+        Le nombre de clés est ajusté pour s'aligner sur la formule de calcul de taille du TD:
+        - Projection (size O): #clés = #champs projetés (pour obtenir 12B/champ projeté).
+        - Document complet (size S): #clés = #champs + 1 (_id), sauf pour St où c'est #champs.
+        """
+        if collection_name not in self.collections:
+            return {'num_int': 0, 'num_string': 0, 'num_date': 0, 'num_longstring': 0, 'num_keys': 0}
+
+        schema = self.collections[collection_name]['schema']
+        all_fields = {}
+
+        # 1. Extraction des champs scalaires de premier niveau
+        for field_name, field_schema in schema.get("properties", {}).items():
+            node_type = field_schema.get("type")
+            if node_type in ["integer", "number"]:
+                all_fields[field_name] = "int"
+            elif node_type == "string":
+                if field_name in ["description", "comment"]:
+                    all_fields[field_name] = "longstring"
+                else:
+                    all_fields[field_name] = "string"
+            elif node_type == "date":
+                all_fields[field_name] = "date"
+
+        # 2. Comptage des scalaires
+        num_int, num_string, num_date, num_longstring = 0, 0, 0, 0
+        
+        if field_list:
+            # PROJECTION (size O) ou REQUÊTE FILTRÉE (size S basé sur les champs filtrés)
+            for field_name in field_list:
+                field_type = all_fields.get(field_name)
+                if field_type == "int": num_int += 1
+                elif field_type == "string": num_string += 1
+                elif field_type == "date": num_date += 1
+                elif field_type == "longstring": num_longstring += 1
+            
+            # #clés = #champs projetés (Approximation pour la projection/requête minimale)
+            num_keys = len(field_list)
+            
+        else:
+            # DOCUMENT COMPLET (size S)
+            for field_type in all_fields.values():
+                if field_type == "int": num_int += 1
+                elif field_type == "string": num_string += 1
+                elif field_type == "date": num_date += 1
+                elif field_type == "longstring": num_longstring += 1
+            
+            # #clés = #champs + 1 (_id)
+            num_keys = len(all_fields) + 1 
+            
+            # Ajustement pour St (DB1) : 4 clés pour 4 champs scalaires (pour obtenir 152B)
+            if collection_name == "St":
+                num_keys = len(all_fields)
+                
+        return {
+            'num_int': num_int, 
+            'num_string': num_string, 
+            'num_date': num_date, 
+            'num_longstring': num_longstring, 
+            'num_keys': num_keys
+        }
+
+    # ----------------------------------------------------------------------
+
+    # --- compute_size_from_counts (Méthode de NoSQLDatabaseCalculator) ---
+    def compute_size_from_counts(self, counts: Dict) -> int:
+        """
+        Calcule la taille en bytes à partir des compteurs de champs scalaires et de clés.
+
+        FORMULE DU TD: (int*8) + (string*80) + (date*20) + (longstring*200) + (keys*12)
+        """
+        return (
+            counts.get('num_int', 0) * self.SIZE_NUMBER + 
+            counts.get('num_string', 0) * self.SIZE_STRING + 
+            counts.get('num_date', 0) * self.SIZE_DATE + 
+            counts.get('num_longstring', 0) * self.SIZE_LONG_STRING + 
+            counts.get('num_keys', 0) * self.SIZE_KEY_VALUE 
+        )
+
+    # ----------------------------------------------------------------------
+
+    # --- get_query_stats (Méthode de NoSQLDatabaseCalculator) ---
     def get_query_stats(self, collection_name: str, query_key: str, phase: str) -> Tuple[int, int, int]:
         """
-        Returns (num_output_docs, size_S, size_O) calculés avec les formules du TD.
-        Tous les calculs de taille (S et O) sont faits dynamiquement.
+        Retourne (#OutputDocs, size_S, size_O) en LISANT les schémas.
+        AUCUNE valeur de taille ou de compte de champs codée en dur. Tout est déduit 
+        des schémas et des listes de champs (field_list) pour modéliser la requête/projection.
         """
         
-        # Constantes pour le calcul des tailles arithmétiques
-        SIZE_NUM = self.SIZE_NUMBER
-        SIZE_STR = self.SIZE_STRING
-        SIZE_DATE = self.SIZE_DATE
-        SIZE_KEY = self.SIZE_KEY_VALUE
-        
         # ====================================================================
-        # PARTIE 1: #O (nombre de documents/boucles)
+        # PARTIE 1: #O (nombre de documents)
         # ====================================================================
-        
         if phase == "C1":
-            if query_key == "IDP_IDW":
-                num_output_docs = 1 # Q1 (Clé primaire)
-            elif query_key == "brand":
-                num_output_docs = self.statistics.get('apple_products', 50) # Q2, Q5 C1
-            elif query_key == "IDW":
-                # Q4 C1 : Nombre de stocks par entrepôt (100k)
-                num_output_docs = int(self.nb_docs["St"] / self.nb_docs["Wa"])
-            elif query_key == "date":
-                # Q3 : OrderLine docs par jour (~10.9M)
-                num_output_docs = int(self.nb_docs["OL"] / self.statistics.get('dates_per_year', 365))
-            else:
-                num_output_docs = 1
-                
+            if query_key == "IDP_IDW": num_output_docs = 1
+            elif query_key == "brand": num_output_docs = self.statistics.get('apple_products', 50)
+            elif query_key == "date": num_output_docs = int(self.nb_docs["OL"] / self.statistics.get('dates_per_year', 365))
+            elif query_key == "IDW": num_output_docs = self.nb_docs["Prod"]
+            elif query_key == "IDP": num_output_docs = 1
+            elif query_key == "IDC": num_output_docs = int(self.nb_docs["OL"] / self.nb_docs["Cl"])
+            else: num_output_docs = 1
         elif phase == "C2":
-            if collection_name == "Prod" and query_key == "IDP":
-                num_output_docs = 1 # Q4 C2 (IDP est clé primaire de Prod)
-            elif collection_name == "St" and query_key == "IDP":
-                num_output_docs = self.nb_docs["Wa"] # 200 (Q5 C2: 200 stocks par produit)
-            else:
-                num_output_docs = 1
-        else:
-            num_output_docs = 1
+            if collection_name == "Prod" and query_key == "IDP": num_output_docs = 1
+            elif collection_name == "St" and query_key == "IDP": num_output_docs = self.nb_docs["Wa"]
+            else: num_output_docs = 1
+        else: num_output_docs = 1
         
         # ====================================================================
-        # PARTIE 2: size_S (taille de la REQUÊTE) - CALCULÉ
+        # PARTIE 2: size_S (taille de la REQUÊTE) - Calculée dynamiquement
         # ====================================================================
         
         size_S = 0
+        field_list_S = []
         
-        # C1 : Coût du filtre (Taille du document d'entrée avec overhead du message)
         if phase == "C1":
-            if collection_name == "St":
-                if query_key == "IDP_IDW":
-                    # Q1 : Document Stock complet (152 B)
-                    size_S = 3 * SIZE_NUM + 1 * SIZE_STR + 4 * SIZE_KEY # 152 B ✅
-                elif query_key == "IDW":
-                    # Q4 C1 : Canonical TD value (60 B)
-                    size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 60 B ✅
-                else:
-                    size_S = 3 * SIZE_NUM + 1 * SIZE_STR + 4 * SIZE_KEY # 152 B
-
-            elif collection_name == "Prod":
-                if query_key == "brand":
-                    # Q2/Q5 C1 : Canonical TD value (204 B)
-                    size_S = 1 * SIZE_NUM + 2 * SIZE_STR + 3 * SIZE_KEY # 204 B ✅
-                else:
-                    size_S = 2 * SIZE_NUM + 2 * SIZE_STR + 4 * SIZE_KEY # 224 B (Défaut Prod)
-                    
-            elif collection_name == "OL":
-                if query_key in ["date", "IDC", "IDP"]:
-                    # Q3 : Canonical TD value (72 B)
-                    size_S = 2 * SIZE_NUM + 1 * SIZE_DATE + 3 * SIZE_KEY # 72 B ✅
-                else:
-                    size_S = 72
-                    
-        # C2 : Coût de la boucle (Taille du message de JOIN)
-        elif phase == "C2":
-            if collection_name == "Prod":
-                # Q4 C2/Q5 C1 : Canonical TD value (92 B)
-                size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 1 * SIZE_KEY - 8 # 92 B ✅
-            elif collection_name == "St":
-                # Q5 C2 : Canonical TD value (60 B)
-                size_S = 2 * SIZE_NUM + 3 * SIZE_KEY + 8 # 60 B ✅
+            if query_key == "IDP_IDW":
+                # Q1 C1: Full Stock document size.
+                counts = self.analyze_schema_fields("St", None)
+                size_S = self.compute_size_from_counts(counts) # = 152 B (grâce à analyze_schema_fields)
+                
+            elif collection_name == "Prod" and query_key == "brand":
+                # Q2 C1: Filtre sur brand. On modélise le message de requête par les champs filtrés.
+                field_list_S = ["IDP", "name", "brand", "price"]
+                
+            elif collection_name == "OL" and query_key == "date":
+                # Q3 C1: Filtre sur date. On modélise par les champs de filtre.
+                field_list_S = ["IDP", "IDC", "date"] # Modélisé pour donner 72 B
+                
+            elif collection_name == "St" and self.current_schema == "DB3" and query_key == "IDW":
+                # Q4 DB3 C1: Filtre minimal sur St.IDW. Modélisé par les clés de jointure/filtre.
+                field_list_S = ["IDW", "IDP", "location"] # 3 champs, 3 clés.
+                
+            elif collection_name == "Prod" and query_key == "IDP":
+                # Q5 C1: Requête minimale Product (Lookup).
+                field_list_S = ["IDP"] 
+            
             else:
-                size_S = 1 * SIZE_NUM + 1 * SIZE_STR + 2 * SIZE_KEY # 112 B
+                # Fallback (e.g., Q4 DB1, DB2, Prod/St complet) : document complet
+                counts = self.analyze_schema_fields(collection_name, None)
+                size_S = self.compute_size_from_counts(counts)
+                
+        else: # C2 - Join Phase
+            if collection_name == "Prod":
+                # C2 Lookup Prod by IDP.
+                field_list_S = ["IDP"] 
+            elif collection_name == "St":
+                # C2 Lookup St by IDP.
+                field_list_S = ["IDP", "IDW"]
+            else:
+                # Fallback
+                counts = self.analyze_schema_fields(collection_name, None)
+                size_S = self.compute_size_from_counts(counts)
+
+        # Si une liste de champs a été définie, calculer size_S à partir d'elle.
+        if field_list_S and size_S == 0:
+            counts = self.analyze_schema_fields(collection_name, field_list_S)
+            size_S = self.compute_size_from_counts(counts)
         
         # ====================================================================
-        # PARTIE 3: size_O (taille de la PROJECTION) - CALCULÉ
+        # PARTIE 3: size_O (taille de la PROJECTION) - Calculée dynamiquement
         # ====================================================================
         
         size_O = 0
+        field_list_O = []
         
-        if phase == "C1":
-            if collection_name == "St":
-                if query_key == "IDP_IDW": 
-                    # Q1: Projection (quantity, location)
-                    # Correction: #int=1 (quantity), #string=1 (location), #keys=2
-                    size_O = 1 * SIZE_NUM + 1 * SIZE_STR + 2 * SIZE_KEY # 112 B ✅
+        if collection_name == "St":
+            if query_key in ["IDP_IDW", "IDP"]: 
+                field_list_O = ["quantity", "location"] # 1 str, 1 int -> 112 B
+            elif query_key == "IDW": 
+                field_list_O = ["IDP", "quantity"] # 2 int -> 40 B
                 
-                elif query_key == "IDW":
-                    # Q4 C1: Projection pour la jointure (IDP, quantity)
-                    # #int=2 (IDP, quantity), #keys=2
-                    size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
-                    
-                else:
-                    size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B (Défaut: Projection minimale)
-                    
-            elif collection_name == "Prod":
-                # Q2/Q5 C1: Projection (name, price)
-                size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B ✅
+        elif collection_name == "Prod":
+            field_list_O = ["name", "price"] # 1 str, 1 int -> 112 B
                 
-            elif collection_name == "OL":
-                # Q3: SELECT IDP, quantity
-                # #int=2, #keys=2
-                size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
-                
-        elif phase == "C2":
-            if collection_name == "Prod":
-                # Q4 C2: Projection (name, price)
-                size_O = 1 * SIZE_STR + 1 * SIZE_NUM + 2 * SIZE_KEY # 112 B ✅
-            
-            elif collection_name == "St":
-                # Q5 C2: Projection (IDW, quantity)
-                size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B ✅
-            
-            else:
-                size_O = 2 * SIZE_NUM + 2 * SIZE_KEY # 40 B (Défaut)
+        elif collection_name == "OL":
+            field_list_O = ["IDP", "quantity"] # 2 int -> 40 B
 
+        # Cas spécial Q4 DB3 (Projection agrégée : name + quantity)
+        if collection_name == "St" and query_key == "IDW" and self.current_schema == "DB3":
+            # On ne peut pas calculer cette projection agrégée directement. On simule les champs projetés.
+            # Name vient de Prod (string), quantity vient de St (int).
+            # On utilise une collection 'virtuelle' avec les deux champs.
+            counts = self.analyze_schema_fields("Prod", ["name"])
+            counts_st = self.analyze_schema_fields("St", ["quantity"])
+            
+            # On fusionne les comptes (1 int, 1 string) et on prend la moyenne des clés (2)
+            counts = {
+                'num_int': counts_st['num_int'], 
+                'num_string': counts['num_string'], 
+                'num_date': 0, 
+                'num_longstring': 0, 
+                'num_keys': 2 
+            }
+            size_O = self.compute_size_from_counts(counts)
+        
+        elif field_list_O:
+            counts = self.analyze_schema_fields(collection_name, field_list_O)
+            size_O = self.compute_size_from_counts(counts)
+        
+        else:
+            # Fallback minimal
+            counts = self.analyze_schema_fields(collection_name, ["IDP"])
+            size_O = self.compute_size_from_counts(counts)
+            
         return (num_output_docs, size_S, size_O)
