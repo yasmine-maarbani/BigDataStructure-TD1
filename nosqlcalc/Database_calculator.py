@@ -24,7 +24,7 @@ class NoSQLDatabaseCalculator:
         self.collections = {}
         self.current_schema = current_schema
         self.schema_map = {}
-        self.num_shards = statistics.get('servers', 1000) # a vérifier
+        self.num_shards = statistics.get('servers', 1000) # Number of servers for sharding
         
         # Mapping of denormlization schemas
         self.SCHEMAS = {
@@ -45,10 +45,8 @@ class NoSQLDatabaseCalculator:
         }
         self.nb_docs["St"] = self.nb_docs["Prod"] * self.nb_docs["Wa"]
         
-        # Stockage des tailles de documents calculées
+        # Storage of calculated document sizes
         self.computed_sizes = {}
-
-        
 
         # Relationship matrix: how many children per parent
         self.avg_length = {
@@ -77,7 +75,7 @@ class NoSQLDatabaseCalculator:
             },
         }
 
-        # Mapping: array name → collection type
+        # Mapping: array name -> collection type
         self.array_to_collection = {
             "categories": "Cat",
             "supplier": "Supp",
@@ -500,14 +498,17 @@ class NoSQLDatabaseCalculator:
         print(f"  • Distinct values/server: {stats['avg_distinct_values_per_server']:,.2f}")
 
 
+
+
+
     # ================================================================
     # QUERY COST (VT) CALCULATION - HOMEWORK 3.3
     # ================================================================
     
     def compute_and_store_sizes(self):
-        """
-        Calcule les tailles de tous les documents et les stocke.
-        À appeler après avoir ajouté toutes les collections.
+        """    
+        Calculates the sizes of all documents and stores them.    
+        To be called after adding all collections.    
         """
         for coll_name, coll_data in self.collections.items():
             schema = coll_data['schema']
@@ -532,21 +533,21 @@ class NoSQLDatabaseCalculator:
         Computes the Vt cost for a simple filter query (Vt = C1).
         
         Args:
-            collection_name: Collection à interroger
-            filter_key: Clé utilisée dans le filtre WHERE
-            collection_sharding_key: Clé de sharding de la collection
-            sql_query: Requête SQL complète
+            collection_name: Collection to query
+            filter_key: Key used in the WHERE filter
+            collection_sharding_key: Collection sharding key
+            sql_query: Complete SQL query
         
         Returns:
-            Dict contenant les détails du coût
+            Dict containing cost details
         """
-        # Déterminer si la requête est shardée
+        # Determine whether the query is sharded
         is_sharded = (filter_key == collection_sharding_key)
         
-        # Calculer #S1 (nombre de shards contactés)
+        # Calculate #S1 (number of shards contacted)
         S1 = 1 if is_sharded else self.num_shards
         
-        # Appeler get_query_stats avec la requête SQL pour obtenir size_S et size_O
+        # Call get_query_stats with the SQL query to obtain size_S and size_O.
         num_O1, size_S1, size_O1 = self.get_query_stats(
             collection_name, 
             filter_key, 
@@ -554,27 +555,27 @@ class NoSQLDatabaseCalculator:
             sql_query
         )
         
-        # Calcul du volume C1
+        # Calculation of volume C1
         C1_volume = S1 * size_S1 + num_O1 * size_O1
         
-        # Nom de l'opération
-        op_name = f"Filtre {'avec' if is_sharded else 'sans'} sharding"
+        # Name of the operation
+        op_name = f"Filter {'with' if is_sharded else 'without'} sharding"
         
-        # Affichage des résultats
-        print(f"\n--- Coût du Filtre ({op_name}) ---")
+        # Displaying results
+        print(f"\n--- Filter Cost ({op_name}) ---")
         print(f"Collection: {collection_name}")
-        print(f"Filtre sur: {filter_key}")
-        print(f"Sharding sur: {collection_sharding_key}")
-        print(f"\nFormule: C1 = #S1 × size_S1 + #O1 × size_O1")
+        print(f"Filter on: {filter_key}")
+        print(f"Sharding on: {collection_sharding_key}")
+        print(f"\nFormula: C1 = #S1 × size_S1 + #O1 × size_O1")
         print(f"        C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
         print(f"        C1 = {S1 * size_S1} + {num_O1 * size_O1}")
         print(f"        C1 = {C1_volume:,} B")
         
-        print(f"\nDétails:")
-        print(f"  • #S1 (serveurs contactés) = {S1}")
-        print(f"  • size_S1 (taille requête) = {size_S1} B")
-        print(f"  • #O1 (docs retournés) = {num_O1:,}")
-        print(f"  • size_O1 (taille par doc) = {size_O1} B")
+        print(f"\nDetails:")
+        print(f"  • #S1 (servers contacted) = {S1}")
+        print(f"  • size_S1 (query size) = {size_S1} B")
+        print(f"  • #O1 (returned documents) = {num_O1:,}")
+        print(f"  • size_O1 (size per document) = {size_O1} B")
         
         return {
             "query_type": "Filter",
@@ -601,19 +602,19 @@ class NoSQLDatabaseCalculator:
         Computes the Vt cost for a join query (Vt = C1 + loops * C2).
         
         Args:
-            coll1_name: Collection 1 (entrée)
-            coll1_filter_key: Clé de filtre pour C1
-            coll1_sharding_key: Clé de sharding de C1
-            coll2_name: Collection 2 (cible du join)
-            coll2_join_key: Clé de jointure pour C2
-            coll2_sharding_key: Clé de sharding de C2
-            sql_query: Requête SQL complète
+            coll1_name: Collection 1 (input)
+            coll1_filter_key: Filter key for C1
+            coll1_sharding_key: Sharding key for C1
+            coll2_name: Collection 2 (join target)
+            coll2_join_key: Join key for C2
+            coll2_sharding_key: Sharding key for C2
+            sql_query: Complete SQL query
         """
-        # === C1 : Requête initiale sur collection 1 ===
+        # === C1: Initial query on collection 1 ===
         is_sharded_C1 = (coll1_filter_key == coll1_sharding_key)
         S1 = 1 if is_sharded_C1 else self.num_shards
         
-        # Calculer size_S1, size_O1, et #O1 avec la requête SQL complète
+        # Calculate size_S1, size_O1, and #O1 with the complete SQL query.
         num_O1, size_S1, size_O1 = self.get_query_stats(
             coll1_name, 
             coll1_filter_key, 
@@ -622,17 +623,14 @@ class NoSQLDatabaseCalculator:
         )
         
         C1_volume = S1 * size_S1 + num_O1 * size_O1
-        loops = num_O1  # Nombre de loops = nombre de documents retournés par C1
+        loops = num_O1  # Number of loops = number of documents returned by C1
         
-        # === C2 : Requête de jointure sur collection 2 ===
+        # === C2: Join query on collection 2 ===
         is_sharded_C2 = (coll2_join_key == coll2_sharding_key)
         S2 = 1 if is_sharded_C2 else self.num_shards
         
-        # Pour C2, on calcule différemment size_S2 et size_O2
         print(f"\n  → Computing C2 sizes:")
         
-        # size_S2: requête de lookup avec JOIN (SELECT + JOIN + WHERE converti)
-        # On utilise la requête complète pour extraire les champs nécessaires au lookup
         num_O2, size_S2, _ = self.get_query_stats(
             coll2_name, 
             coll2_join_key, 
@@ -643,7 +641,7 @@ class NoSQLDatabaseCalculator:
         # size_O2: PROJECTION sans JOIN (uniquement les champs SELECT de coll2)
         # On retire le JOIN pour ne garder que les champs projetés
         query_projection_c2 = self._create_projection_query(sql_query, coll2_name, remove_join=True)
-        print(f"    Projection C2 (without JOIN): {query_projection_c2}")
+        print(f"    Projection C2 : {query_projection_c2}")
         counts_o2 = self.analyze_schema_fields(coll2_name, query=query_projection_c2)
         size_O2 = self.compute_size_from_counts(counts_o2)
         
@@ -653,26 +651,26 @@ class NoSQLDatabaseCalculator:
         Vt_total = C1_volume + C2_volume
         
         # === Affichage des résultats ===
-        c1_op = f"Filtre {'avec' if is_sharded_C1 else 'sans'} sharding"
-        c2_op = f"Boucle {'avec' if is_sharded_C2 else 'sans'} sharding"
+        c1_op = f"Filter {'with' if is_sharded_C1 else 'without'} sharding"
+        c2_op = f"Loop {'with' if is_sharded_C2 else 'without'} sharding"
 
-        print(f"\n--- Coût de la Jointure ---")
-        print(f"Collection 1: {coll1_name} (filtre sur {coll1_filter_key}, sharding sur {coll1_sharding_key})")
-        print(f"Collection 2: {coll2_name} (join sur {coll2_join_key}, sharding sur {coll2_sharding_key})")
+        print(f"\n--- Join cost ---")
+        print(f"Collection 1: {coll1_name} (filter on {coll1_filter_key}, sharding on {coll1_sharding_key})")
+        print(f"Collection 2: {coll2_name} (join on {coll2_join_key}, sharding on {coll2_sharding_key})")
         
         print(f"\n[C1] {c1_op}")
-        print(f"  Formule: C1 = #S1 × size_S1 + #O1 × size_O1")
+        print(f"  Formula: C1 = #S1 × size_S1 + #O1 × size_O1")
         print(f"          C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
         print(f"          C1 = {C1_volume:,} B")
         print(f"  → Loops (O1) = {loops:,}")
         
         print(f"\n[C2] {c2_op} (×{loops:,} loops)")
-        print(f"  Formule par loop: C2 = #S2 × size_S2 + #O2 × size_O2")
+        print(f"  Formula per loop: C2 = #S2 × size_S2 + #O2 × size_O2")
         print(f"                   C2 = {S2} × {size_S2} + {num_O2} × {size_O2}")
-        print(f"  C2 par loop = {C2_per_loop:,} B")
+        print(f"  C2 per loop = {C2_per_loop:,} B")
         print(f"  C2 total = {loops:,} × {C2_per_loop:,} = {C2_volume:,} B")
         
-        print(f"\n[Vt] Formule: Vt = C1 + loops × C2")
+        print(f"\n[Vt] Formula: Vt = C1 + loops × C2")
         print(f"            Vt = {C1_volume:,} + {C2_volume:,}")
         print(f"            Vt = {Vt_total:,} B ({Vt_total / (1024**2):.2f} MB)")
         
@@ -759,38 +757,37 @@ class NoSQLDatabaseCalculator:
         
     def extract_query_context(self, query: str, collection_name: str) -> Dict[str, List[str]]:
         """
-        Extrait les champs utilisés dans SELECT, WHERE et JOIN pour une collection donnée.
-        
+        Extracts the fields used in SELECT, WHERE, and JOIN for a given collection.
+
         Args:
-            query: Requête SQL complète
-            collection_name: Nom de la collection (pour filtrer les alias)
-        
+        query: Complete SQL query
+        collection_name: Name of the collection (to filter aliases)
+
         Returns:
-            Dict avec 'select', 'where', 'join' contenant les listes de champs
+        Dict with 'select', 'where', 'join' containing the lists of fields
         """
         context = {'select': [], 'where': [], 'join': []}
         
-        # Nettoyer la requête
+        # Clean the query
         query = query.strip().replace('\n', ' ')
         query = re.sub(r'\s+', ' ', query)
         
-        # Trouver l'alias de la collection
-        # Ex: "FROM Product P" ou "JOIN Stock S"
+        # Find the alias of the collection
+        # Ex : "FROM Products P" -> alias = "P"
         alias_pattern = rf'\b(?:FROM|JOIN)\s+{collection_name}\s+(\w+)'
         alias_match = re.search(alias_pattern, query, re.IGNORECASE)
         alias = alias_match.group(1) if alias_match else collection_name[0]
         
-        # 1. Extraire les champs du SELECT
+        # 1. Extract fields from SELECT
         select_pattern = r'SELECT\s+(.*?)\s+FROM'
         select_match = re.search(select_pattern, query, re.IGNORECASE)
         if select_match:
             select_clause = select_match.group(1)
-            # Extraire les champs avec l'alias de notre collection
             # Ex: "P.name, P.price" -> ['name', 'price']
             field_pattern = rf'{alias}\.(\w+)'
             context['select'] = re.findall(field_pattern, select_clause)
         
-        # 2. Extraire les champs du WHERE
+        # 2. Extract fields from WHERE
         where_pattern = r'WHERE\s+(.*?)(?:;|$)'
         where_match = re.search(where_pattern, query, re.IGNORECASE)
         if where_match:
@@ -798,34 +795,30 @@ class NoSQLDatabaseCalculator:
             field_pattern = rf'{alias}\.(\w+)'
             context['where'] = re.findall(field_pattern, where_clause)
         
-        # 3. Extraire les champs du JOIN (ON clause)
-        # Ex: "ON S.IDP = P.IDP" ou "ON P.IDP = S.IDP"
+        # 3. Extract fields from JOIN (ON clause)
         join_pattern = rf'ON\s+(?:{alias}\.(\w+)\s*=\s*\w+\.\w+|\w+\.\w+\s*=\s*{alias}\.(\w+))'
         join_matches = re.finditer(join_pattern, query, re.IGNORECASE)
         for match in join_matches:
-            # Le champ peut être dans le groupe 1 ou 2 selon l'ordre
             field = match.group(1) if match.group(1) else match.group(2)
             if field:
                 context['join'].append(field)
         
         return context
 
-
-    
-    # --- analyze_schema_fields (Méthode de NoSQLDatabaseCalculator) --- context=queries     
+   
     def analyze_schema_fields(self, collection_name: str, 
                              field_list: Optional[List[str]] = None,
                              query: Optional[str] = None) -> Dict:
-        """
-        Analyse un schéma pour compter les types de champs scalaires de premier niveau.
-        
-        Args:
-            collection_name: Nom de la collection à analyser
-            field_list: Liste des champs à inclure (pour projection simple)
-            query: Requête SQL complète (pour extraction automatique du contexte)
-        
-        Returns:
-            Dict contenant les comptages par type de champ
+        """    
+        Analyzes a schema to count the types of first-level scalar fields.
+                
+                Args:
+                    collection_name: Name of the collection to analyze
+                    field_list: List of fields to include (for simple projection)
+                    query: Complete SQL query (for automatic context extraction)
+                
+                Returns:
+                    Dict containing counts by field type
         """
         if collection_name not in self.collections:
             return {'num_int': 0, 'num_string': 0, 'num_date': 0, 
@@ -834,7 +827,7 @@ class NoSQLDatabaseCalculator:
         schema = self.collections[collection_name]['schema']
         all_fields = {}
 
-        # 1. Extraction des champs scalaires de premier niveau avec leur type
+        # 1. Extracting first-level scalar fields with their type
         for field_name, field_schema in schema.get("properties", {}).items():
             node_type = field_schema.get("type")
             if node_type in ["integer", "number"]:
@@ -847,27 +840,27 @@ class NoSQLDatabaseCalculator:
             elif node_type == "date":
                 all_fields[field_name] = "date"
 
-        # 2. Déterminer les champs à compter selon le contexte
+        # 2. Determine which fields to count based on the context
         fields_to_count = set()
         context_info = ""
         
         if query:
-            # Extraction automatique du contexte depuis la requête
+            # Automatic extraction of context from the query
             context = self.extract_query_context(query, collection_name)
             for clause_fields in context.values():
                 if clause_fields:
                     fields_to_count.update(clause_fields)
             context_info = f" | Context: {context}"
         elif field_list:
-            # Projection simple ou liste explicite
+            # Simple projection or explicit list
             fields_to_count = set(field_list)
             context_info = f" | Fields: {field_list}"
         else:
-            # Document complet
+            # Complete document
             fields_to_count = set(all_fields.keys())
             context_info = " | Full document"
 
-        # 3. Comptage des scalaires pour les champs sélectionnés
+        # 3. Counting scalars for selected fields
         num_int, num_string, num_date, num_longstring = 0, 0, 0, 0
         fields_counted = []
 
@@ -885,15 +878,15 @@ class NoSQLDatabaseCalculator:
             if field_type:
                 fields_counted.append(f"{field_name} ({field_type})")
 
-        # 4. Calcul du nombre de clés
+        # 4. Calculating the number of keys
         if query or field_list:
-            # Pour projection/requête : #clés = #champs comptés
+            # For projection/query: #keys = #fields counted
             num_keys = len(fields_counted)
         else:
-            # Pour document complet : #clés = #champs + 1 (_id)
+            # For complete document: #keys = #fields + 1 (_id)
             num_keys = len(all_fields) + 1
             
-            # Ajustement spécifique pour St (DB1)
+            # Specific adjustment for St (DB1)
             if collection_name == "St":
                 num_keys = len(all_fields)
 
@@ -910,14 +903,11 @@ class NoSQLDatabaseCalculator:
             'num_keys': num_keys
         }
 
-    # ----------------------------------------------------------------------
-
-    # --- compute_size_from_counts (Méthode de NoSQLDatabaseCalculator) ---
     def compute_size_from_counts(self, counts: Dict) -> int:
         """
-        Calcule la taille en bytes à partir des compteurs de champs scalaires et de clés.
+        Calculates the size in bytes from the scalar field and key counters.
 
-        FORMULE DU TD: (int*8) + (string*80) + (date*20) + (longstring*200) + (keys*12)
+        FORMULA FROM TD: (int*8) + (string*80) + (date*20) + (longstring*200) + (keys*12)
         """
         return (
             counts.get('num_int', 0) * self.SIZE_NUMBER + 
@@ -926,19 +916,18 @@ class NoSQLDatabaseCalculator:
             counts.get('num_longstring', 0) * self.SIZE_LONG_STRING + 
             counts.get('num_keys', 0) * self.SIZE_KEY_VALUE 
         )
-
-    # ----------------------------------------------------------------------    
+  
     def get_query_stats(self, collection_name: str, query_key: str, phase: str, 
                        sql_query: str) -> Tuple[int, int, int]:
         """
-        Retourne (#OutputDocs, size_S, size_O) en LISANT les schémas.
+        Returns (#OutputDocs, size_S, size_O) by READING the schemas.
         
         Args:
-            collection_name: Nom de la collection à analyser
-            query_key: Clé de la requête (ex: "IDP_IDW", "brand", etc.)
-            phase: Phase de la requête ("C1" ou "C2")
-            sql_query: Requête SQL complète (fournie par QUERIES[query_name])
-        
+            collection_name: Name of the collection to analyze
+            query_key: Query key (e.g., "IDP_IDW," "brand," etc.)
+            phase: Query phase ("C1" or "C2")
+            sql_query: Complete SQL query (provided by QUERIES[query_name])
+
         Returns:
             Tuple (num_output_docs, size_S, size_O)
         """
@@ -947,7 +936,7 @@ class NoSQLDatabaseCalculator:
         print(f"  SQL Query: {sql_query}")
         
         # ====================================================================
-        # PARTIE 1: #O (nombre de documents) - Inchangé
+        # PARTIE 1: #O (nb of documents)
         # ====================================================================
         if phase == "C1":
             if query_key == "IDP_IDW": 
@@ -975,15 +964,15 @@ class NoSQLDatabaseCalculator:
             num_output_docs = 1
         
         # ====================================================================
-        # PARTIE 2: size_S (taille de la REQUÊTE avec WHERE + JOIN)
+        # PARTIE 2: size_S (size of the query with WHERE + JOIN)
         # ====================================================================
         
-        print(f"\n  → Computing size_S (full query with WHERE + JOIN):")
+        print(f"\n  → Computing size_S :")
         counts_s = self.analyze_schema_fields(collection_name, query=sql_query)
         size_S = self.compute_size_from_counts(counts_s)
         
         # ====================================================================
-        # PARTIE 3: size_O (taille de la PROJECTION - SELECT uniquement)
+        # PARTIE 3: size_O (PROJECTION size - SELECT only)
         # ====================================================================
         
         # Créer une version de la requête sans WHERE pour la projection
@@ -995,14 +984,14 @@ class NoSQLDatabaseCalculator:
         size_O = self.compute_size_from_counts(counts_o)
         
         # ====================================================================
-        # CAS SPÉCIAUX
+        # Special cases
         # ====================================================================
         
         # Cas spécial Q4 DB3 (Projection agrégée : name + quantity)
         if collection_name == "St" and query_key == "IDW" and self.current_schema == "DB3":
             print("\n  [SPECIAL CASE] Q4 DB3 - Aggregated projection (name + quantity)")
-            counts_name = self.analyze_schema_fields("Prod", field_list=["name"])
-            counts_qty = self.analyze_schema_fields("St", field_list=["quantity"])
+            counts_name = self.analyze_schema_fields("Prod", field_list=["name"]) #Analyze Product fields separately
+            counts_qty = self.analyze_schema_fields("St", field_list=["quantity"]) #Analyze Stock fields separately
             
             counts_o = {
                 'num_int': counts_qty['num_int'], 
@@ -1020,21 +1009,21 @@ class NoSQLDatabaseCalculator:
     def _create_projection_query(self, sql_query: str, collection_name: str, 
                                  remove_join: bool = False) -> str:
         """
-        Crée une requête de projection en retirant WHERE (et optionnellement JOIN).
+        Creates a projection query by removing WHERE (and optionally JOIN).
         
         Args:
-            sql_query: Requête SQL complète
-            collection_name: Nom de la collection
-            remove_join: Si True, retire aussi la clause JOIN (pour size_O en phase C2)
-        
+            sql_query: Complete SQL query
+            collection_name: Name of the collection
+            remove_join: If True, also removes the JOIN clause (for size_O in phase C2)
+
         Returns:
-            Requête SQL sans clause WHERE (et sans JOIN si remove_join=True)
+            SQL query without WHERE clause (and without JOIN if remove_join=True)
         """
-        # Retirer la clause WHERE
+        # Remove the WHERE clause
         query_without_where = re.sub(r'\s+WHERE\s+.*?(;|$)', r'\1', sql_query, flags=re.IGNORECASE)
         
         if remove_join:
-            # Retirer aussi la clause JOIN (pour C2 projection - on ne garde que SELECT)
+            # Also remove the JOIN clause (for C2 projection)
             query_without_join = re.sub(r'\s+JOIN\s+.*?ON\s+.*?(?=WHERE|;|$)', '', query_without_where, flags=re.IGNORECASE)
             return query_without_join.strip()
         
