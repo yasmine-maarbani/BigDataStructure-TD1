@@ -1193,34 +1193,7 @@ class NoSQLDatabaseCalculator:
         print("[PHASE C2] Aggregation & Result Collection")
         print(f"{'─'*80}")
         
-        # Number of groups after GROUP BY
-        # This depends on the cardinality of the group_key
-        # For aggregations, num_groups represents the maximum possible distinct values
-        if group_key == "IDP":
-            # Maximum: number of distinct products
-            max_possible_groups = self.nb_docs["Prod"]
-        elif group_key == "IDC":
-            max_possible_groups = self.nb_docs["Cl"]
-        elif group_key == "IDW":
-            max_possible_groups = self.nb_docs["Wa"]
-        elif group_key == "date":
-            max_possible_groups = self.statistics.get('dates_per_year', 365)
-        else:
-            # Default: assume high cardinality
-            max_possible_groups = 1000
-        
-        # Actual groups: limited by data processed OR by cardinality
-        num_groups = min(num_O1, max_possible_groups)
-        
-        # Apply LIMIT if specified
-        # num_O2 = number of groups we actually return (after LIMIT and ORDER BY)
-        # When LIMIT is specified, we return AT MOST limit groups, regardless of num_groups
-        if limit:
-            # If limit is specified, we assume we can get up to 'limit' groups
-            # (even if num_groups calculation suggests fewer, because that might be wrong)
-            num_O2 = min(limit, max_possible_groups)
-        else:
-            num_O2 = num_groups
+        num_O2 = 1
         
         # Size of aggregated result: group_key + aggregated_field + keys
         # For example: IDP (int) + SUM(quantity) (int) + 2 keys = 8 + 8 + 24 = 40 B
@@ -1255,59 +1228,25 @@ class NoSQLDatabaseCalculator:
         print(f"\nDetails:")
         print(f"  • #S2 (servers with results) = {S2}")
         print(f"  • #O2 (groups to collect) = {num_O2:,}")
-        if limit:
-            print(f"    (Limited from {num_groups:,} total groups)")
         print(f"  • size_O2 (aggregated result size) = {size_O2} B")
         print(f"    ({group_key} + SUM(quantity) + keys)")
         if needs_shuffle:
             print(f"  • shuffle2 (communication between servers) = {shuffle2:,}")
             print(f"  • Shuffle cost for C2 = {shuffle2 * size_shuffle2:,} B")
         
-        # ====================================================================
-        # PHASE C3: Optional JOIN with target collection
-        # ====================================================================
-        C3_volume = 0
-        if target_coll_name:
-            print(f"\n{'─'*80}")
-            print(f"[PHASE C3] Final JOIN with {target_coll_name}")
-            print(f"{'─'*80}")
-            
-            target_sharding_key = sharding_config.get(target_coll_name, "N/A")
-            
-            # For each aggregated result, we need to fetch the corresponding document
-            # from the target collection
-            is_sharded_C3 = (group_key == target_sharding_key)
-            S3 = 1 if is_sharded_C3 else self.num_shards
-            
-            # Get target document size
-            if target_coll_name in self.computed_sizes:
-                size_target = self.computed_sizes[target_coll_name]['doc_size']
-            else:
-                size_target = 980  # Default for Prod
-            
-            # For each of the num_O2 results, we do a lookup
-            C3_volume = num_O2 * (S3 * size_O2 + size_target)
-            
-            print(f"\nC3 Formula: C3 = #O2 × (#S3 × size_query + size_target)")
-            print(f"           C3 = {num_O2:,} × ({S3} × {size_O2} + {size_target})")
-            print(f"           C3 = {C3_volume:,} B")
-            print(f"\nDetails:")
-            print(f"  • Lookup strategy: {'WITH sharding' if is_sharded_C3 else 'WITHOUT sharding (broadcast)'}")
-            print(f"  • #S3 (servers per lookup) = {S3}")
-            print(f"  • Loops = {num_O2:,}")
         
         # ====================================================================
         # TOTAL COST
         # ====================================================================
         # Formula: Vcom = C1 + loops*C2
         # - For queries without JOIN: loops = 1
-        # - For queries with JOIN (C3): loops = num_O2 (number of groups returned)
+        # - For queries with JOIN (C3): loops = limit (number of results we join)
         
         if target_coll_name:
             # C3 represents lookups for each group result
-            # loops = number of groups we lookup (which is num_O2)
-            loops = num_O2
-            Vcom_total = C1_volume + C3_volume
+            # loops = LIMIT if specified, otherwise num_O2
+            loops = limit if limit else num_O2
+            Vcom_total = C1_volume + loops * C2_volume
         else:
             # Simple aggregation: loops = 1
             loops = 1
@@ -1320,7 +1259,7 @@ class NoSQLDatabaseCalculator:
         if target_coll_name:
             print(f"\nFormula: Vcom = C1 + loops*C2")
             print(f"              = C1 + C3  (where C3 = {loops:,} lookups)")
-            print(f"        Vcom = {C1_volume:,} + {C3_volume:,}")
+            print(f"        Vcom = {C1_volume:,} + {loops * C2_volume:,}")
         else:
             print(f"\nFormula: Vcom = C1 + loops*C2")
             print(f"        Vcom = {C1_volume:,} + {loops} × {C2_volume:,}")
@@ -1330,7 +1269,7 @@ class NoSQLDatabaseCalculator:
         print(f"\nCost Breakdown:")
         print(f"  • C1 (Filter + Shuffle):  {C1_volume:>15,} B ({C1_volume/Vcom_total*100:>5.1f}%)")
         if target_coll_name:
-            print(f"  • C3 (loops={loops:,} × C2):  {C3_volume:>15,} B ({C3_volume/Vcom_total*100:>5.1f}%)")
+            print(f"  • C3 (loops={loops:,} × C2):  {loops * C2_volume:>15,} B ({(loops * C2_volume)/Vcom_total*100:>5.1f}%)")
         else:
             print(f"  • C2 (loops={loops} × Aggregate):  {C2_volume:>15,} B ({C2_volume/Vcom_total*100:>5.1f}%)")
         print(f"  {'─'*50}")
@@ -1343,7 +1282,6 @@ class NoSQLDatabaseCalculator:
             "shuffle1_volume": shuffle1 * size_shuffle1,
             "C2_volume": C2_volume,
             "shuffle2_volume": shuffle2 * size_shuffle2,
-            "C3_volume": C3_volume,
             "needs_shuffle": needs_shuffle,
             "Loops": loops,
             "C1_sharding_strategy": f"{'Filter with' if is_sharded_C1 else 'Full scan without'} sharding",
@@ -1366,7 +1304,6 @@ class NoSQLDatabaseCalculator:
             },
             "details_C2": {
                 "S2": S2,
-                "num_groups": num_groups,
                 "num_O2": num_O2,
                 "size_O2": size_O2,
                 "volume": C2_volume
