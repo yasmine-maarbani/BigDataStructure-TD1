@@ -301,7 +301,8 @@ def run_test_case(calculator: NoSQLDatabaseCalculator, query_name: str, strategy
             filter_key=query_params["FILTER"],
             limit=query_params["LIMIT"],
             target_coll_name=query_params["TARGET"],
-            sharding_config=sharding_config
+            sharding_config=sharding_config,
+            sql_query=sql_query  # Pass the real SQL query
         )
     elif query_params["TARGET"] is None:
         # CAS FILTER SIMPLE (Q1, Q2, Q3)

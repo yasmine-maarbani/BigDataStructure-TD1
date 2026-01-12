@@ -940,13 +940,34 @@ class NoSQLDatabaseCalculator:
         # ====================================================================
         print("QUERYYYYY"+str(query_key))
         if phase == "C1":
-            # Check if this is a full scan for aggregation (no real filter, just GROUP BY)
-            is_aggregate_full_scan = (query_key is None or 
-                                     ("GROUP BY" in sql_query and "WHERE" not in sql_query))
+            group_match = re.search(r"GROUP BY\s+(?:\w+\.)?(\w+)", sql_query, re.IGNORECASE)
+            group_key_sql = group_match.group(1) if group_match else None
             
-            if is_aggregate_full_scan and collection_name == "OL":
-                # Full scan of OrderLine for aggregation (Q6)
-                num_output_docs = self.nb_docs["OL"]
+            if group_key_sql:
+                print("  → Computing #O (GROUP BY detected):"+group_key_sql)
+                # Mapping de la clé SQL (ex: IDP) vers le type interne (ex: Prod)
+                clean_key = group_key_sql.lower().replace("id", "")
+                id_map = {"p": "Prod", "c": "Cl", "w": "Wa", "s": "Supp", "st": "St", "ol": "OL"}
+                target_type = id_map.get(clean_key, self.array_to_collection.get(clean_key, "Prod"))
+
+                # 2. Vérification de la présence d'un filtre WHERE
+                where_match = re.search(r"WHERE\s+(?:\w+\.)?(\w+)\s*=", sql_query, re.IGNORECASE)
+                
+                if where_match:
+                    print("  → Computing #O (WITH filter detected):"+where_match.group(1))
+                    # CAS AVEC FILTRE (ex: Q7 - Group by IDP pour UN client)
+                    # On cherche la relation : ex: Nb de Prod par Client (avg_length['Cl']['Prod'])
+                    filter_field = where_match.group(1).lower().replace("id", "")
+                    filter_source = id_map.get(filter_field, "Cl")
+                    
+                    num_output_docs = self.avg_length.get(filter_source, {}).get(target_type, 1)
+                    print(f"  -> Aggregation with filter: avg {target_type} per {filter_source} = {num_output_docs}")
+                else:
+                    print("  → Computing #O (NO filter detected):")
+                    # CAS SANS FILTRE (ex: Q6 - Group by IDP sur toute la table)
+                    # Le nombre de groupes est le nombre total d'entités distinctes
+                    num_output_docs = self.nb_docs.get(target_type, 1)
+                    print(f"  -> Full Aggregation: total {target_type} = {num_output_docs}")
             elif query_key == "IDP_IDW": 
                 num_output_docs = 1
             elif query_key == "brand": 
@@ -1042,7 +1063,8 @@ class NoSQLDatabaseCalculator:
                                    sharding_config: Dict,
                                    filter_key: Optional[str] = None,
                                    limit: Optional[int] = None,
-                                   target_coll_name: Optional[str] = None) -> Dict:
+                                   target_coll_name: Optional[str] = None,
+                                   sql_query: Optional[str] = None) -> Dict:
         """
         Computes the Vt cost for aggregate queries with GROUP BY.
         
@@ -1055,6 +1077,7 @@ class NoSQLDatabaseCalculator:
             filter_key: Optional key used in WHERE filter (e.g., "IDC")
             limit: Optional LIMIT value (affects C2 loops)
             target_coll_name: Optional target collection for final JOIN (e.g., "Prod")
+            sql_query: Optional complete SQL query (will be extracted if not provided)
         
         Returns:
             Dict containing cost details for all phases
@@ -1091,30 +1114,47 @@ class NoSQLDatabaseCalculator:
             S1 = self.num_shards
         
         # Use get_query_stats to determine num_O1, size_S1, size_O1
-        # Build a simplified SQL query for aggregate
-        sql_query = f"SELECT {group_key}, SUM(quantity) FROM {entry_coll_name}"
-        if filter_key:
-            sql_query += f" WHERE {filter_key} = $value"
-        sql_query += f" GROUP BY {group_key}"
-        if limit:
-            sql_query += f" LIMIT {limit}"
-        sql_query += ";"
+        # Extract the subquery from the real SQL if provided
+        if sql_query:
+            # Extract subquery for aggregation (the part inside parentheses)
+            subquery_match = re.search(r'\(\s*(SELECT.*?)\s*\)\s+(?:AS\s+)?\w+\s+ON', sql_query, re.IGNORECASE | re.DOTALL)
+            if subquery_match:
+                c1_sql_query = subquery_match.group(1).strip()
+                print(f"  [EXTRACTED SUBQUERY]: {c1_sql_query}")
+            else:
+                # No subquery found, use the original query
+                c1_sql_query = sql_query
+        else:
+            # Build a simplified SQL query for aggregate (fallback)
+            c1_sql_query = f"SELECT {group_key}, SUM(quantity) FROM {entry_coll_name}"
+            if filter_key:
+                c1_sql_query += f" WHERE {filter_key} = $value"
+            c1_sql_query += f" GROUP BY {group_key}"
+            if limit:
+                c1_sql_query += f" LIMIT {limit}"
+            c1_sql_query += ";"
         
         num_O1, size_S1, size_O1 = self.get_query_stats(
             entry_coll_name,
             filter_key,
             "C1",
-            sql_query
+            c1_sql_query
         )
         print(f"\n  → C1 FILTERRRR: {filter_key or 'None (Full scan)'}")
+        needs_shuffle = False
+        if group_key and group_key != collection_sharding_key:
+            # Si on filtre sur la clé de sharding avec un égalité (ex: WHERE IDC = 125)
+            # Alors toutes les données sont sur 1 serveur, pas de shuffle réseau nécessaire.
+            if filter_key == collection_sharding_key and " = " in sql_query:
+                needs_shuffle = False
+            else:
+                needs_shuffle = True
         
-        # Check if shuffle is needed for redistribution by GROUP BY key
-        needs_shuffle = (group_key != collection_sharding_key)
         
         if needs_shuffle:
             # SHUFFLE is needed: data must be redistributed
             # shuffle1 = number of documents that need redistribution
-            shuffle1 = num_O1
+            shuffle1 = (num_O1 -1)*S1
             size_shuffle1 = size_O1
         else:
             # NO SHUFFLE needed: data is already partitioned correctly
