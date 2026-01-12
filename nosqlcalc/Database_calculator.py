@@ -938,9 +938,16 @@ class NoSQLDatabaseCalculator:
         # ====================================================================
         # PARTIE 1: #O (nb of documents)
         # ====================================================================
-        print("QUERYYYYY"+query_key)
+        print("QUERYYYYY"+str(query_key))
         if phase == "C1":
-            if query_key == "IDP_IDW": 
+            # Check if this is a full scan for aggregation (no real filter, just GROUP BY)
+            is_aggregate_full_scan = (query_key is None or 
+                                     ("GROUP BY" in sql_query and "WHERE" not in sql_query))
+            
+            if is_aggregate_full_scan and collection_name == "OL":
+                # Full scan of OrderLine for aggregation (Q6)
+                num_output_docs = self.nb_docs["OL"]
+            elif query_key == "IDP_IDW": 
                 num_output_docs = 1
             elif query_key == "brand": 
                 num_output_docs = self.statistics.get('apple_products', 50)
@@ -1063,7 +1070,7 @@ class NoSQLDatabaseCalculator:
         print(f"Sharding: {collection_sharding_key}")
         print(f"Aggregation: SUM(quantity)")
         if limit:
-            print(f"Limit: {limit}")
+            print(f"Limitttt: {limit}")
         if target_coll_name:
             print(f"Final JOIN with: {target_coll_name}")
         
@@ -1148,21 +1155,32 @@ class NoSQLDatabaseCalculator:
         
         # Number of groups after GROUP BY
         # This depends on the cardinality of the group_key
+        # For aggregations, num_groups represents the maximum possible distinct values
         if group_key == "IDP":
-            num_groups = min(num_O1, self.nb_docs["Prod"])
+            # Maximum: number of distinct products
+            max_possible_groups = self.nb_docs["Prod"]
         elif group_key == "IDC":
-            num_groups = min(num_O1, self.nb_docs["Cl"])
+            max_possible_groups = self.nb_docs["Cl"]
         elif group_key == "IDW":
-            num_groups = min(num_O1, self.nb_docs["Wa"])
+            max_possible_groups = self.nb_docs["Wa"]
         elif group_key == "date":
-            num_groups = min(num_O1, self.statistics.get('dates_per_year', 365))
+            max_possible_groups = self.statistics.get('dates_per_year', 365)
         else:
             # Default: assume high cardinality
-            num_groups = min(num_O1, 1000)
+            max_possible_groups = 1000
+        
+        # Actual groups: limited by data processed OR by cardinality
+        num_groups = min(num_O1, max_possible_groups)
         
         # Apply LIMIT if specified
-        
-        num_O2 = limit if limit and limit < num_groups else num_groups
+        # num_O2 = number of groups we actually return (after LIMIT and ORDER BY)
+        # When LIMIT is specified, we return AT MOST limit groups, regardless of num_groups
+        if limit:
+            # If limit is specified, we assume we can get up to 'limit' groups
+            # (even if num_groups calculation suggests fewer, because that might be wrong)
+            num_O2 = min(limit, max_possible_groups)
+        else:
+            num_O2 = num_groups
         
         # Size of aggregated result: group_key + aggregated_field + keys
         # For example: IDP (int) + SUM(quantity) (int) + 2 keys = 8 + 8 + 24 = 40 B
@@ -1234,16 +1252,16 @@ class NoSQLDatabaseCalculator:
         # ====================================================================
         # Formula: Vcom = C1 + loops*C2
         # - For queries without JOIN: loops = 1
-        # - For queries with JOIN (C3): loops = limit (if specified) or num_O2
-        print("LIMITTTT"+str(limit))
+        # - For queries with JOIN (C3): loops = num_O2 (number of groups returned)
+        
         if target_coll_name:
-            # C3 represents loops*C2 where each result triggers a lookup
-            # If there's a limit, the number of loops is the limit
-            loops = limit if limit else num_O2
+            # C3 represents lookups for each group result
+            # loops = number of groups we lookup (which is num_O2)
+            loops = num_O2
             Vcom_total = C1_volume + C3_volume
         else:
             # Simple aggregation: loops = 1
-            loops = limit if limit else 1
+            loops = 1
             Vcom_total = C1_volume + loops * C2_volume
         
         print(f"\n{'='*80}")
@@ -1252,7 +1270,7 @@ class NoSQLDatabaseCalculator:
         
         if target_coll_name:
             print(f"\nFormula: Vcom = C1 + loops*C2")
-            print(f"              = C1 + C3  (where C3 = {num_O2:,} lookups)")
+            print(f"              = C1 + C3  (where C3 = {loops:,} lookups)")
             print(f"        Vcom = {C1_volume:,} + {C3_volume:,}")
         else:
             print(f"\nFormula: Vcom = C1 + loops*C2")
@@ -1278,7 +1296,7 @@ class NoSQLDatabaseCalculator:
             "shuffle2_volume": shuffle2 * size_shuffle2,
             "C3_volume": C3_volume,
             "needs_shuffle": needs_shuffle,
-            "Loops": num_O2,
+            "Loops": loops,
             "C1_sharding_strategy": f"{'Filter with' if is_sharded_C1 else 'Full scan without'} sharding",
             "C2_sharding_strategy": f"Aggregate {'without' if needs_shuffle else 'with'} shuffle",
             "details_C1": {
