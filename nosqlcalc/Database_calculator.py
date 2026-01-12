@@ -938,6 +938,7 @@ class NoSQLDatabaseCalculator:
         # ====================================================================
         # PARTIE 1: #O (nb of documents)
         # ====================================================================
+        print("QUERYYYYY"+query_key)
         if phase == "C1":
             if query_key == "IDP_IDW": 
                 num_output_docs = 1
@@ -1029,5 +1030,280 @@ class NoSQLDatabaseCalculator:
         
         return query_without_where.strip()
 
+
+    def compute_aggregate_query_vt(self, entry_coll_name: str, group_key: str,
+                                   sharding_config: Dict,
+                                   filter_key: Optional[str] = None,
+                                   limit: Optional[int] = None,
+                                   target_coll_name: Optional[str] = None) -> Dict:
+        """
+        Computes the Vt cost for aggregate queries with GROUP BY.
+        
+        The formula is: Vt = C1 + SHUFFLE + C2 (+ optional C3 for final JOIN)
+        
+        Args:
+            entry_coll_name: Collection to query (e.g., "OL")
+            group_key: Key used in GROUP BY clause (e.g., "IDP")
+            sharding_config: Dict with sharding keys for all collections
+            filter_key: Optional key used in WHERE filter (e.g., "IDC")
+            limit: Optional LIMIT value (affects C2 loops)
+            target_coll_name: Optional target collection for final JOIN (e.g., "Prod")
+        
+        Returns:
+            Dict containing cost details for all phases
+        """
+        collection_sharding_key = sharding_config.get(entry_coll_name, "N/A")
+        
+        print(f"\n{'='*80}")
+        print(f"AGGREGATE QUERY ANALYSIS")
+        print(f"{'='*80}")
+        print(f"Collection: {entry_coll_name}")
+        print(f"Filter: {filter_key or 'None (Full scan)'}")
+        print(f"Group By: {group_key}")
+        print(f"Sharding: {collection_sharding_key}")
+        print(f"Aggregation: SUM(quantity)")
+        if limit:
+            print(f"Limit: {limit}")
+        if target_coll_name:
+            print(f"Final JOIN with: {target_coll_name}")
+        
+        # ====================================================================
+        # PHASE C1: Initial Filter/Scan
+        # ====================================================================
+        print(f"\n{'─'*80}")
+        print("[PHASE C1] Initial Filter/Scan")
+        print(f"{'─'*80}")
+        
+        # Determine sharding for C1
+        if filter_key:
+            is_sharded_C1 = (filter_key == collection_sharding_key)
+            S1 = 1 if is_sharded_C1 else self.num_shards
+        else:
+            # No filter = full scan across all shards
+            is_sharded_C1 = False
+            S1 = self.num_shards
+        
+        # Use get_query_stats to determine num_O1, size_S1, size_O1
+        # Build a simplified SQL query for aggregate
+        sql_query = f"SELECT {group_key}, SUM(quantity) FROM {entry_coll_name}"
+        if filter_key:
+            sql_query += f" WHERE {filter_key} = $value"
+        sql_query += f" GROUP BY {group_key}"
+        if limit:
+            sql_query += f" LIMIT {limit}"
+        sql_query += ";"
+        
+        num_O1, size_S1, size_O1 = self.get_query_stats(
+            entry_coll_name,
+            filter_key,
+            "C1",
+            sql_query
+        )
+        print(f"\n  → C1 FILTERRRR: {filter_key or 'None (Full scan)'}")
+        
+        # Check if shuffle is needed for redistribution by GROUP BY key
+        needs_shuffle = (group_key != collection_sharding_key)
+        
+        if needs_shuffle:
+            # SHUFFLE is needed: data must be redistributed
+            # shuffle1 = number of documents that need redistribution
+            shuffle1 = num_O1
+            size_shuffle1 = size_O1
+        else:
+            # NO SHUFFLE needed: data is already partitioned correctly
+            shuffle1 = 0
+            size_shuffle1 = 0
+        
+        # C1 = S1 * size_S1 + shuffle1 * size_shuffle1 + O1 * size_O1
+        C1_volume = S1 * size_S1 + shuffle1 * size_shuffle1 + num_O1 * size_O1
+        
+        print(f"\nC1 Formula: C1 = S1 × size_S1 + shuffle1 × size_shuffle1 + O1 × size_O1")
+        print(f"           C1 = {S1} × {size_S1} + {shuffle1:,} × {size_shuffle1} + {num_O1:,} × {size_O1}")
+        print(f"           C1 = {C1_volume:,} B")
+        print(f"\nDetails:")
+        print(f"  • Sharding strategy: {'WITH sharding' if is_sharded_C1 else 'WITHOUT sharding (broadcast/full scan)'}")
+        print(f"  • #S1 (servers contacted) = {S1}")
+        print(f"  • #O1 (documents to process) = {num_O1:,}")
+        print(f"  • size_O1 (document size) = {size_O1} B")
+        
+        if needs_shuffle:
+            print(f"\n  ⚠️  SHUFFLE REQUIRED!")
+            print(f"      Reason: Group By key ({group_key}) ≠ Sharding key ({collection_sharding_key})")
+            print(f"      • shuffle1 (documents to redistribute) = {shuffle1:,}")
+            print(f"      • size_shuffle1 (shuffle data size) = {size_shuffle1} B")
+            print(f"      • Shuffle cost = {shuffle1 * size_shuffle1:,} B")
+            print(f"      • This requires transferring all filtered data across the network")
+        else:
+            print(f"\n  ✓ NO SHUFFLE NEEDED!")
+            print(f"      Reason: Group By key ({group_key}) = Sharding key ({collection_sharding_key})")
+            print(f"      • Data is already partitioned by {group_key}")
+            print(f"      • Each server can perform local aggregation without network transfer")
+        
+        # ====================================================================
+        # PHASE C2: Aggregation and Result Collection
+        # ====================================================================
+        print(f"\n{'─'*80}")
+        print("[PHASE C2] Aggregation & Result Collection")
+        print(f"{'─'*80}")
+        
+        # Number of groups after GROUP BY
+        # This depends on the cardinality of the group_key
+        if group_key == "IDP":
+            num_groups = min(num_O1, self.nb_docs["Prod"])
+        elif group_key == "IDC":
+            num_groups = min(num_O1, self.nb_docs["Cl"])
+        elif group_key == "IDW":
+            num_groups = min(num_O1, self.nb_docs["Wa"])
+        elif group_key == "date":
+            num_groups = min(num_O1, self.statistics.get('dates_per_year', 365))
+        else:
+            # Default: assume high cardinality
+            num_groups = min(num_O1, 1000)
+        
+        # Apply LIMIT if specified
+        
+        num_O2 = limit if limit and limit < num_groups else num_groups
+        
+        # Size of aggregated result: group_key + aggregated_field + keys
+        # For example: IDP (int) + SUM(quantity) (int) + 2 keys = 8 + 8 + 24 = 40 B
+        size_O2 = self.SIZE_NUMBER * 2 + self.SIZE_KEY_VALUE * 2
+        
+        # C2: Collecting results from servers
+        # If shuffle was needed, results are distributed across all servers
+        # If no shuffle, results are already on correct servers
+        S2 = self.num_shards if needs_shuffle else S1 
+        
+        # shuffle2 represents communication between servers for collecting aggregated results
+        # When results are distributed across servers, we need to collect them
+        shuffle2 = num_O2 if needs_shuffle else 0
+        size_shuffle2 = size_O2 if needs_shuffle else 0
+        
+        # C2 = S2 * size_S2 + shuffle2 * size_shuffle2 + O2 * size_O2
+        size_S2 = size_O2
+        C2_volume = S2 * size_S2 + shuffle2 * size_shuffle2 + num_O2 * size_O2
+        
+        print(f"\nC2 Formula: C2 = S2 × size_S2 + shuffle2 × size_shuffle2 + O2 × size_O2")
+        print(f"           C2 = {S2} × {size_S2} + {shuffle2:,} × {size_shuffle2} + {num_O2:,} × {size_O2}")
+        print(f"           C2 = {C2_volume:,} B")
+        print(f"\nDetails:")
+        print(f"  • #S2 (servers with results) = {S2}")
+        print(f"  • #O2 (groups to collect) = {num_O2:,}")
+        if limit:
+            print(f"    (Limited from {num_groups:,} total groups)")
+        print(f"  • size_O2 (aggregated result size) = {size_O2} B")
+        print(f"    ({group_key} + SUM(quantity) + keys)")
+        if needs_shuffle:
+            print(f"  • shuffle2 (communication between servers) = {shuffle2:,}")
+            print(f"  • Shuffle cost for C2 = {shuffle2 * size_shuffle2:,} B")
+        
+        # ====================================================================
+        # PHASE C3: Optional JOIN with target collection
+        # ====================================================================
+        C3_volume = 0
+        if target_coll_name:
+            print(f"\n{'─'*80}")
+            print(f"[PHASE C3] Final JOIN with {target_coll_name}")
+            print(f"{'─'*80}")
+            
+            target_sharding_key = sharding_config.get(target_coll_name, "N/A")
+            
+            # For each aggregated result, we need to fetch the corresponding document
+            # from the target collection
+            is_sharded_C3 = (group_key == target_sharding_key)
+            S3 = 1 if is_sharded_C3 else self.num_shards
+            
+            # Get target document size
+            if target_coll_name in self.computed_sizes:
+                size_target = self.computed_sizes[target_coll_name]['doc_size']
+            else:
+                size_target = 980  # Default for Prod
+            
+            # For each of the num_O2 results, we do a lookup
+            C3_volume = num_O2 * (S3 * size_O2 + size_target)
+            
+            print(f"\nC3 Formula: C3 = #O2 × (#S3 × size_query + size_target)")
+            print(f"           C3 = {num_O2:,} × ({S3} × {size_O2} + {size_target})")
+            print(f"           C3 = {C3_volume:,} B")
+            print(f"\nDetails:")
+            print(f"  • Lookup strategy: {'WITH sharding' if is_sharded_C3 else 'WITHOUT sharding (broadcast)'}")
+            print(f"  • #S3 (servers per lookup) = {S3}")
+            print(f"  • Loops = {num_O2:,}")
+        
+        # ====================================================================
+        # TOTAL COST
+        # ====================================================================
+        # Formula: Vcom = C1 + loops*C2
+        # - For queries without JOIN: loops = 1
+        # - For queries with JOIN (C3): loops = limit (if specified) or num_O2
+        print("LIMITTTT"+str(limit))
+        if target_coll_name:
+            # C3 represents loops*C2 where each result triggers a lookup
+            # If there's a limit, the number of loops is the limit
+            loops = limit if limit else num_O2
+            Vcom_total = C1_volume + C3_volume
+        else:
+            # Simple aggregation: loops = 1
+            loops = limit if limit else 1
+            Vcom_total = C1_volume + loops * C2_volume
+        
+        print(f"\n{'='*80}")
+        print("[TOTAL COST]")
+        print(f"{'='*80}")
+        
+        if target_coll_name:
+            print(f"\nFormula: Vcom = C1 + loops*C2")
+            print(f"              = C1 + C3  (where C3 = {num_O2:,} lookups)")
+            print(f"        Vcom = {C1_volume:,} + {C3_volume:,}")
+        else:
+            print(f"\nFormula: Vcom = C1 + loops*C2")
+            print(f"        Vcom = {C1_volume:,} + {loops} × {C2_volume:,}")
+        
+        print(f"        Vcom = {Vcom_total:,} B ({Vcom_total / (1024**2):.2f} MB)")
+        
+        print(f"\nCost Breakdown:")
+        print(f"  • C1 (Filter + Shuffle):  {C1_volume:>15,} B ({C1_volume/Vcom_total*100:>5.1f}%)")
+        if target_coll_name:
+            print(f"  • C3 (loops={loops:,} × C2):  {C3_volume:>15,} B ({C3_volume/Vcom_total*100:>5.1f}%)")
+        else:
+            print(f"  • C2 (loops={loops} × Aggregate):  {C2_volume:>15,} B ({C2_volume/Vcom_total*100:>5.1f}%)")
+        print(f"  {'─'*50}")
+        print(f"  • TOTAL:                   {Vcom_total:>15,} B")
+        
+        return {
+            "query_type": "Aggregate",
+            "Vt_total": Vcom_total,
+            "C1_volume": C1_volume,
+            "shuffle1_volume": shuffle1 * size_shuffle1,
+            "C2_volume": C2_volume,
+            "shuffle2_volume": shuffle2 * size_shuffle2,
+            "C3_volume": C3_volume,
+            "needs_shuffle": needs_shuffle,
+            "Loops": num_O2,
+            "C1_sharding_strategy": f"{'Filter with' if is_sharded_C1 else 'Full scan without'} sharding",
+            "C2_sharding_strategy": f"Aggregate {'without' if needs_shuffle else 'with'} shuffle",
+            "details_C1": {
+                "S1": S1,
+                "size_S1": size_S1,
+                "num_O1": num_O1,
+                "size_O1": size_O1,
+                "shuffle1": shuffle1,
+                "size_shuffle1": size_shuffle1,
+                "volume": C1_volume,
+                "is_sharded": is_sharded_C1
+            },
+            "details_SHUFFLE": {
+                "needed": needs_shuffle,
+                "shuffle1_volume": shuffle1 * size_shuffle1,
+                "shuffle2_volume": shuffle2 * size_shuffle2,
+                "reason": f"Group By ({group_key}) {'!=' if needs_shuffle else '=='} Sharding ({collection_sharding_key})"
+            },
+            "details_C2": {
+                "S2": S2,
+                "num_groups": num_groups,
+                "num_O2": num_O2,
+                "size_O2": size_O2,
+                "volume": C2_volume
+            }
+        }
     
 
