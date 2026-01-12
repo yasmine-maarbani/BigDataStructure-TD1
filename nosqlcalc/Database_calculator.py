@@ -1227,14 +1227,23 @@ class NoSQLDatabaseCalculator:
         size_O2 = self.SIZE_NUMBER * 2 + self.SIZE_KEY_VALUE * 2
         
         # C2: Collecting results from servers
-        # If shuffle was needed, results are distributed across all servers
-        # If no shuffle, results are already on correct servers
-        S2 = self.num_shards if needs_shuffle else S1 
-        
+        target_sharding_key = sharding_config.get(target_coll_name, "N/A")
+        if target_coll_name:
+            # On vérifie si on joint sur la clé de partitionnement de la table cible
+            is_join_on_sharding_key = (group_key == target_sharding_key)
+            S2 = 1 if is_join_on_sharding_key else self.num_shards
+        else:
+            S2 = self.num_shards if needs_shuffle else S1
+                
         # shuffle2 represents communication between servers for collecting aggregated results
         # When results are distributed across servers, we need to collect them
-        shuffle2 = num_O2 if needs_shuffle else 0
-        size_shuffle2 = size_O2 if needs_shuffle else 0
+        # Si les deux tables sont shardées sur la même clé, elles sont colocalisées
+        if target_coll_name:
+            shuffle2 = 0
+            size_shuffle2 = 0
+        else:
+            shuffle2 = num_O2 if needs_shuffle else 0
+            size_shuffle2 = size_O2 if needs_shuffle else 0
         
         # C2 = S2 * size_S2 + shuffle2 * size_shuffle2 + O2 * size_O2
         size_S2 = size_O2
