@@ -1,6 +1,17 @@
 import re
+import argparse
 from nosqlcalc import NoSQLDatabaseCalculator
 from typing import Dict, Optional
+
+# --- 0. COMMAND-LINE ARGUMENT PARSING ---
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='NoSQL Database Calculator Tests - Homework 3')
+    parser.add_argument('--quiet', '-q', action='store_true', 
+                       help='Suppress output (quiet mode)')
+    parser.add_argument('--verbose', '-v', action='store_true', 
+                       help='Verbose output (default)')
+    return parser.parse_args()
 
 # --- 1. SQL QUERY PARSER FUNCTION ---
 
@@ -333,17 +344,18 @@ def run_test_case(calculator: NoSQLDatabaseCalculator, query_name: str, strategy
     print(f"\n→ TOTAL Vt : {result['Vt_total']:,} B")
     return result
 
-def setup_database(schema_name: str) -> NoSQLDatabaseCalculator:
+def setup_database(schema_name: str, verbose: bool = True) -> NoSQLDatabaseCalculator:
     """
     Configure une base de données avec ses collections.
     
     Args:
         schema_name: "DB1", "DB2", ou "DB3"
+        verbose: If True, outputs messages to console
     
     Returns:
         NoSQLDatabaseCalculator configuré et prêt
     """
-    calc = NoSQLDatabaseCalculator(STATS, current_schema=schema_name)
+    calc = NoSQLDatabaseCalculator(STATS, current_schema=schema_name, verbose=verbose)
     
     if schema_name == "DB1":
         # DB1: Modèle normalisé
@@ -376,27 +388,32 @@ def setup_database(schema_name: str) -> NoSQLDatabaseCalculator:
 # --- 4. HOMEWORK EXECUTION ---
 
 if __name__ == "__main__":
+    args = parse_args()
+    verbose = not args.quiet  # Default is verbose unless --quiet specified
     
-    print("\n" + "█"*80)
-    print("█" + " "*78 + "█")
-    print("█" + " "*15 + "HOMEWORK 3.3 - QUERY COST ANALYSIS (Vt)" + " "*22 + "█")
-    print("█" + " "*25 + "Big Data Structure Course" + " "*29 + "█")
-    print("█" + " "*78 + "█")
-    print("█"*80)
+    if verbose:
+        print("\n" + "█"*80)
+        print("█" + " "*78 + "█")
+        print("█" + " "*15 + "HOMEWORK 3.3 - QUERY COST ANALYSIS (Vt)" + " "*22 + "█")
+        print("█" + " "*25 + "Big Data Structure Course" + " "*29 + "█")
+        print("█" + " "*78 + "█")
+        print("█"*80)
     
     # ====================================================================
     # PART 1: DB1 TESTS (Normalized Model, JOIN everywhere)
     # ====================================================================
     
-    print("\n" + "="*80)
-    print("PART 1 : SIMULATIONS ON DB1 (Normalized Model)")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print("PART 1 : SIMULATIONS ON DB1 (Normalized Model)")
+        print("="*80)
     
-    calc_db1 = setup_database("DB1")
+    calc_db1 = setup_database("DB1", verbose)
     
-    print("\n" + "-"*80)
-    print("A. FILTER QUERIES (Q1, Q2)")
-    print("-"*80)
+    if verbose:
+        print("\n" + "-"*80)
+        print("A. FILTER QUERIES (Q1, Q2)")
+        print("-"*80)
     
     # Q1 Tests
     run_test_case(calc_db1, "Q1", "R1.1")
@@ -406,16 +423,18 @@ if __name__ == "__main__":
     run_test_case(calc_db1, "Q2", "R2.1")
     run_test_case(calc_db1, "Q2", "R2.2")
     
-    print("\n" + "-"*80)
-    print("B. JOIN QUERIES - Q4 (Stock → Product)")
-    print("-"*80)
+    if verbose:
+        print("\n" + "-"*80)
+        print("B. JOIN QUERIES - Q4 (Stock → Product)")
+        print("-"*80)
     
     run_test_case(calc_db1, "Q4", "R4.1") 
     run_test_case(calc_db1, "Q4", "R4.2")
     
-    print("\n" + "-"*80)
-    print("C. JOIN QUERIES - Q5 (Product → Stock)")
-    print("-"*80)
+    if verbose:
+        print("\n" + "-"*80)
+        print("C. JOIN QUERIES - Q5 (Product → Stock)")
+        print("-"*80)
     
     run_test_case(calc_db1, "Q5", "R5.1") 
     run_test_case(calc_db1, "Q5", "R5.2")
@@ -425,62 +444,68 @@ if __name__ == "__main__":
     # The solver automatically switches to FILTER when embedding is detected.
     # ====================================================================
     
-    print("\n" + "="*80)
-    print("PART 2 : IMPACT OF DENORMALIZATION ON QUERY Q4")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print("PART 2 : IMPACT OF DENORMALIZATION ON QUERY Q4")
+        print("="*80)
     
     SHARDING_TEST = "R4.2"  # St(#IDP), Prod(#IDP)
     
     # A. DB1 (Normalized - for comparison)
-    print("\n" + "-"*80)
-    print("A. DB1 (Normalized Model) - BASELINE")
-    print("-"*80)
+    if verbose:
+        print("\n" + "-"*80)
+        print("A. DB1 (Normalized Model) - BASELINE")
+        print("-"*80)
     run_test_case(calc_db1, "Q4", SHARDING_TEST)
     
     # B. DB2 (Stock embedded in Product)
-    print("\n" + "-"*80)
-    print("B. DB2 (Stock EMBEDDED in Product)")
-    print("-"*80)
-    calc_db2 = setup_database("DB2")
+    if verbose:
+        print("\n" + "-"*80)
+        print("B. DB2 (Stock EMBEDDED in Product)")
+        print("-"*80)
+    calc_db2 = setup_database("DB2", verbose)
     run_test_case(calc_db2, "Q4", SHARDING_TEST) 
     
     # C. DB3 (Product embedded in Stock)
-    print("\n" + "-"*80)
-    print("C. DB3 (Product EMBEDDED in Stock)")
-    print("-"*80)
-    calc_db3 = setup_database("DB3")
+    if verbose:
+        print("\n" + "-"*80)
+        print("C. DB3 (Product EMBEDDED in Stock)")
+        print("-"*80)
+    calc_db3 = setup_database("DB3", verbose)
     run_test_case(calc_db3, "Q4", SHARDING_TEST)
     
     # ====================================================================
     # PART 3: COMPARISON SUMMARY
     # ====================================================================
     
-    print("\n" + "="*80)
-    print("PART 3 : COMPARISON SUMMARY FOR Q4 with R4.2")
-    print("="*80)
-    
-    print("\nDatabase Model Impact on Query Cost:")
-    print("-"*80)
-    print(f"{'Database':<15} {'Model':<30} {'Join Required?':<20} {'Expected Cost':<20}")
-    print("-"*80)
-    print(f"{'DB1':<15} {'Normalized':<30} {'YES (2 collections)':<20} {'HIGH (C1+C2)':<20}")
-    print(f"{'DB2':<15} {'St in Prod':<30} {'NO (embedded)':<20} {'MEDIUM (Filter)':<20}")
-    print(f"{'DB3':<15} {'Prod in St':<30} {'NO (embedded)':<20} {'LOW (Filter)':<20}")
-    print("-"*80)
-    
-    print("\nKey Insights:")
-    print("  • DB1: Requires JOIN → C1 (filter Stock) + C2 (loop on Product)")
-    print("  • DB2: Stock embedded in Product → Filter on Product only")
-    print("  • DB3: Product embedded in Stock → Filter on Stock only (BEST for Q4)")
-    print("  • Denormalization eliminates joins but increases document size")
+    if verbose:
+        print("\n" + "="*80)
+        print("PART 3 : COMPARISON SUMMARY FOR Q4 with R4.2")
+        print("="*80)
+        
+        print("\nDatabase Model Impact on Query Cost:")
+        print("-"*80)
+        print(f"{'Database':<15} {'Model':<30} {'Join Required?':<20} {'Expected Cost':<20}")
+        print("-"*80)
+        print(f"{'DB1':<15} {'Normalized':<30} {'YES (2 collections)':<20} {'HIGH (C1+C2)':<20}")
+        print(f"{'DB2':<15} {'St in Prod':<30} {'NO (embedded)':<20} {'MEDIUM (Filter)':<20}")
+        print(f"{'DB3':<15} {'Prod in St':<30} {'NO (embedded)':<20} {'LOW (Filter)':<20}")
+        print("-"*80)
+        
+        print("\nKey Insights:")
+        print("  • DB1: Requires JOIN → C1 (filter Stock) + C2 (loop on Product)")
+        print("  • DB2: Stock embedded in Product → Filter on Product only")
+        print("  • DB3: Product embedded in Stock → Filter on Stock only (BEST for Q4)")
+        print("  • Denormalization eliminates joins but increases document size")
     
     # ====================================================================
     # OPTIONAL: Q3 Test (if needed)
     # ====================================================================
     
-    print("\n" + "="*80)
-    print("OPTIONAL: Q3 TEST (OrderLine filter by date)")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print("OPTIONAL: Q3 TEST (OrderLine filter by date)")
+        print("="*80)
     
     run_test_case(calc_db1, "Q3", "R3.1")
     run_test_case(calc_db1, "Q3", "R3.2")
@@ -489,11 +514,12 @@ if __name__ == "__main__":
     # ====================================================================
     # PART 4: AGGREGATE QUERIES (Q6, Q7)
     # ====================================================================
-    print("\n" + "="*80)
-    print("PART 4 : AGGREGATE QUERIES (Shuffle & Lookups)")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print("PART 4 : AGGREGATE QUERIES (Shuffle & Lookups)")
+        print("="*80)
 
-    calc_db1 = setup_database("DB1")
+    calc_db1 = setup_database("DB1", verbose)
 
     # Tests Q6 : Top 100 Products
     run_test_case(calc_db1, "Q6", "R6.1") # Cas coûteux (Shuffle)

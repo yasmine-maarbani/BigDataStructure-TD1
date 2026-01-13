@@ -1,4 +1,17 @@
 from nosqlcalc import NoSQLDatabaseCalculator
+import argparse
+
+# ============================================================
+# COMMAND-LINE ARGUMENT PARSING
+# ============================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='NoSQL Database Calculator Tests - Homework 1')
+    parser.add_argument('--quiet', '-q', action='store_true', 
+                       help='Suppress output (quiet mode)')
+    parser.add_argument('--verbose', '-v', action='store_true', 
+                       help='Verbose output (default)')
+    return parser.parse_args()
 
 # ============================================================
 # STATISTICS FROM TD
@@ -384,50 +397,54 @@ SHARDING_TESTS = [
 # TEST FUNCTIONS
 # ============================================================
 
-def test_single_database(db_name: str, db_config: dict, calc: NoSQLDatabaseCalculator):
+def test_single_database(db_name: str, db_config: dict, calc: NoSQLDatabaseCalculator, verbose: bool = True):
     """Test a single database configuration."""
-    print("\n" + "="*80)
-    print(f"DATABASE: {db_name}")
-    print(f"Signature: {db_config['signature']}")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print(f"DATABASE: {db_name}")
+        print(f"Signature: {db_config['signature']}")
+        print("="*80)
 
     for coll_name, schema in db_config['collections'].items():
         calc.add_collection(coll_name, schema)
 
     calc.print_database_summary()
 
-    print(f"\n{'─'*80}")
-    print(f"DETAILED COLLECTION ANALYSIS")
-    print(f"{'─'*80}")
+    if verbose:
+        print(f"\n{'─'*80}")
+        print(f"DETAILED COLLECTION ANALYSIS")
+        print(f"{'─'*80}")
     for coll_name in db_config['collections'].keys():
         calc.print_collection_analysis(coll_name)
 
 
-def test_all_databases():
+def test_all_databases(verbose: bool = True):
     """Test all database configurations (DB1-DB5)."""
-    print("\n" + "█"*80)
-    print("█" + "█"*78 + "█")
-    print("█" + "█"*20 + "TD COMPLETE TEST SUITE" + "█"*37 + "█")
-    print("█" + "█"*78 + "█")
-    print("█"*80)
+    if verbose:
+        print("\n" + "█"*80)
+        print("█" + "█"*78 + "█")
+        print("█" + "█"*20 + "TD COMPLETE TEST SUITE" + "█"*37 + "█")
+        print("█" + "█"*78 + "█")
+        print("█"*80)
 
     # Test each database
     for db_name, db_config in DATABASES.items():
         # Create fresh calculator for each DB
-        calc = NoSQLDatabaseCalculator(TD_STATISTICS)
-        test_single_database(db_name, db_config, calc)
+        calc = NoSQLDatabaseCalculator(TD_STATISTICS, verbose=verbose)
+        test_single_database(db_name, db_config, calc, verbose)
 
 
-def compare_databases():
+def compare_databases(verbose: bool = True):
     """Compare sizes of all databases."""
-    print("\n" + "="*80)
-    print("DATABASE SIZE COMPARISON")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print("DATABASE SIZE COMPARISON")
+        print("="*80)
 
     results = []
 
     for db_name, db_config in DATABASES.items():
-        calc = NoSQLDatabaseCalculator(TD_STATISTICS)
+        calc = NoSQLDatabaseCalculator(TD_STATISTICS, verbose=verbose)
 
         for coll_name, schema in db_config['collections'].items():
             calc.add_collection(coll_name, schema)
@@ -440,34 +457,37 @@ def compare_databases():
             'collections': len(db_config['collections'])
         })
 
-    print(f"\n{'Database':<10} {'Collections':<15} {'Size (GB)':<15} {'Signature':<50}")
-    print("-"*90)
-    for r in results:
-        print(f"{r['name']:<10} {r['collections']:<15} {r['size_gb']:<15.4f} {r['signature']:<50}")
+    if verbose:
+        print(f"\n{'Database':<10} {'Collections':<15} {'Size (GB)':<15} {'Signature':<50}")
+        print("-"*90)
+        for r in results:
+            print(f"{r['name']:<10} {r['collections']:<15} {r['size_gb']:<15.4f} {r['signature']:<50}")
 
-    print("\n" + "="*80)
+        print("\n" + "="*80)
 
 
-def test_sharding():
+def test_sharding(verbose: bool = True):
     """Test all sharding strategies from Section 2.6."""
-    print("\n" + "█"*80)
-    print("█" + " "*78 + "█")
-    print("█" + " "*20 + "SHARDING" + " "*24 + "█")
-    print("█" + " "*78 + "█")
-    print("█"*80)
+    if verbose:
+        print("\n" + "█"*80)
+        print("█" + " "*78 + "█")
+        print("█" + " "*20 + "SHARDING" + " "*24 + "█")
+        print("█" + " "*78 + "█")
+        print("█"*80)
 
-    print(f"\nConfiguration: {TD_STATISTICS['servers']:,} servers in cluster")
-    print(f"Total data: {TD_STATISTICS['order_lines']:,} order lines\n")
+        print(f"\nConfiguration: {TD_STATISTICS['servers']:,} servers in cluster")
+        print(f"Total data: {TD_STATISTICS['order_lines']:,} order lines\n")
 
     # Use DB1 for sharding tests
-    calc = NoSQLDatabaseCalculator(TD_STATISTICS)
+    calc = NoSQLDatabaseCalculator(TD_STATISTICS, verbose=verbose)
     for coll_name, schema in DATABASES["DB1"]['collections'].items():
         calc.add_collection(coll_name, schema)
 
     # Test each sharding strategy with detailed output
-    print("="*90)
-    print(f"{'Strategy':<25} {'Docs/Server':<20} {'Distinct Values/Server':<25}")
-    print("="*90)
+    if verbose:
+        print("="*90)
+        print(f"{'Strategy':<25} {'Docs/Server':<20} {'Distinct Values/Server':<25}")
+        print("="*90)
 
     for test in SHARDING_TESTS:
         stats = calc.compute_sharding_stats(
@@ -477,20 +497,22 @@ def test_sharding():
         )
         strategy = f"{test['collection']}-#{test['key']}"
 
+        if verbose:
+            print(f"{strategy:<25} {stats['avg_docs_per_server']:<20,.2f} "
+                  f"{stats['avg_distinct_values_per_server']:<25,.2f} ")
 
-        print(f"{strategy:<25} {stats['avg_docs_per_server']:<20,.2f} "
-              f"{stats['avg_distinct_values_per_server']:<25,.2f} ")
-
-    print("="*90)
+    if verbose:
+        print("="*90)
 
 
-def test_specific_collection_details():
+def test_specific_collection_details(verbose: bool = True):
     """Show detailed breakdown for interesting collections."""
-    print("\n" + "="*80)
-    print("DETAILED EXAMPLES: Key Collections")
-    print("="*80)
+    if verbose:
+        print("\n" + "="*80)
+        print("DETAILED EXAMPLES: Key Collections")
+        print("="*80)
 
-    calc = NoSQLDatabaseCalculator(TD_STATISTICS)
+    calc = NoSQLDatabaseCalculator(TD_STATISTICS, verbose=verbose)
 
     examples = [
         ("DB1 Product", "DB1", "Product"),
@@ -499,11 +521,12 @@ def test_specific_collection_details():
     ]
 
     for label, db_name, coll_name in examples:
-        print(f"\n{'─'*80}")
-        print(f"{label}")
-        print(f"{'─'*80}")
+        if verbose:
+            print(f"\n{'─'*80}")
+            print(f"{label}")
+            print(f"{'─'*80}")
 
-        calc = NoSQLDatabaseCalculator(TD_STATISTICS)
+        calc = NoSQLDatabaseCalculator(TD_STATISTICS, verbose=verbose)
         db_config = DATABASES[db_name]
         calc.add_collection(coll_name, db_config['collections'][coll_name])
         calc.print_collection_analysis(coll_name)
@@ -514,40 +537,47 @@ def test_specific_collection_details():
 # ============================================================
 
 if __name__ == "__main__":
-    print("\n")
-    print("█"*80)
-    print("█" + " "*78 + "█")
-    print("█" + " "*15 + "NoSQL Database Calculator - TD Test Suite" + " "*22 + "█")
-    print("█" + " "*25 + "Big Data Structure Course" + " "*29 + "█")
-    print("█" + " "*78 + "█")
-    print("█"*80)
+    args = parse_args()
+    verbose = not args.quiet  # Default is verbose unless --quiet specified
+    
+    if verbose:
+        print("\n")
+        print("█"*80)
+        print("█" + " "*78 + "█")
+        print("█" + " "*15 + "NoSQL Database Calculator - TD Test Suite" + " "*22 + "█")
+        print("█" + " "*25 + "Big Data Structure Course" + " "*29 + "█")
+        print("█" + " "*78 + "█")
+        print("█"*80)
 
-    # Menu
-    print("\nTEST MENU:")
-    print("  1. Test ALL databases (DB1-DB5) - Complete analysis")
-    print("  2. Compare database sizes")
-    print("  3. Test sharding strategies")
-    print("  4. Show detailed examples")
-    print("  5. Run EVERYTHING")
+        # Menu
+        print("\nTEST MENU:")
+        print("  1. Test ALL databases (DB1-DB5) - Complete analysis")
+        print("  2. Compare database sizes")
+        print("  3. Test sharding strategies")
+        print("  4. Show detailed examples")
+        print("  5. Run EVERYTHING")
 
-    choice = input("\nChoose test (1-5) or press Enter for all: ").strip()
+        choice = input("\nChoose test (1-5) or press Enter for all: ").strip()
+    else:
+        choice = ""
 
     if choice == "1":
-        test_all_databases()
+        test_all_databases(verbose)
     elif choice == "2":
-        compare_databases()
+        compare_databases(verbose)
     elif choice == "3":
-        test_sharding()
+        test_sharding(verbose)
     elif choice == "4":
-        test_specific_collection_details()
+        test_specific_collection_details(verbose)
     else:
-        test_all_databases()
-        compare_databases()
-        test_sharding()
-        test_specific_collection_details()
+        test_all_databases(verbose)
+        compare_databases(verbose)
+        test_sharding(verbose)
+        test_specific_collection_details(verbose)
 
-    print("\n" + "█"*80)
-    print("█" + " "*78 + "█")
-    print("█" + " "*30 + "TESTS COMPLETED!" + " "*28 + "█")
-    print("█" + " "*78 + "█")
-    print("█"*80 + "\n")
+    if verbose:
+        print("\n" + "█"*80)
+        print("█" + " "*78 + "█")
+        print("█" + " "*30 + "TESTS COMPLETED!" + " "*28 + "█")
+        print("█" + " "*78 + "█")
+        print("█"*80 + "\n")
