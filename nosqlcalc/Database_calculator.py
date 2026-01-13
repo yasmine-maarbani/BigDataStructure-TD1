@@ -1,5 +1,7 @@
 from typing import Dict, List, Tuple, Optional
 import re
+from nosqlcalc.logger import CalculatorLogger
+from nosqlcalc.formatter import ResultFormatter
 
 class NoSQLDatabaseCalculator:
     """
@@ -18,9 +20,11 @@ class NoSQLDatabaseCalculator:
     SIZE_LONG_STRING = 200
     SIZE_KEY_VALUE = 12
 
-    def __init__(self, statistics: Dict, current_schema: str = "DB1"):
+    def __init__(self, statistics: Dict, current_schema: str = "DB1", verbose: bool = True):
         """Initializes the calculator with schema support."""
         self.statistics = statistics
+        self.verbose = verbose
+        self.logger = CalculatorLogger(verbose=verbose)
         self.collections = {}
         self.current_schema = current_schema
         self.schema_map = {}
@@ -431,71 +435,88 @@ class NoSQLDatabaseCalculator:
     # PRINT
     # ================================================================
 
+    def get_collection_report(self, collection_name: str) -> str:
+        """
+        Get formatted collection analysis report.
+        
+        Args:
+            collection_name: Name of the collection
+            
+        Returns:
+            Formatted analysis as string
+        """
+        analysis = self.analyze_collection(collection_name)
+        return ResultFormatter.format_collection_analysis(analysis)
+
+    def display_collection_analysis(self, collection_name: str):
+        """
+        Display collection analysis (backward compatibility).
+        
+        Args:
+            collection_name: Name of the collection
+        """
+        report = self.get_collection_report(collection_name)
+        self.logger.info(report)
+
     def print_collection_analysis(self, collection_name: str):
         """Prints the analysis of a collection."""
-        analysis = self.analyze_collection(collection_name)
+        self.display_collection_analysis(collection_name)
 
-        print("\n" + "="*70)
-        print(f"COLLECTION: {analysis['collection_name']}")
-        print(f"Detected type: {analysis['detected_type']}")
-        print("="*70)
+    def get_database_summary(self) -> str:
+        """
+        Get formatted database summary report.
+        
+        Returns:
+            Formatted summary as string
+        """
+        total_gb, details = self.compute_database_size_gb()
+        doc_counts = {name: coll['doc_count'] for name, coll in self.collections.items()}
+        return ResultFormatter.format_database_summary(total_gb, details, doc_counts)
 
-        print(f"\nSTATISTICS:")
-        print(f"  • Documents: {analysis['document_count']:,}")
-        print(f"  • Merges: {analysis['merge_count']}")
-
-        print(f"\nSCALARS OUTSIDE ARRAYS:")
-        for key, val in analysis['scalars_outside'].items():
-            if val > 0:
-                print(f"  • {key}: {val}")
-
-        print(f"\nSCALARS INSIDE ARRAYS:")
-        if analysis['scalars_inside']:
-            for array_name, info in analysis['scalars_inside'].items():
-                avg = analysis['array_averages'].get(array_name, 1)
-                print(f"  • Array '{array_name}' (average: {avg:,.0f}):")
-                for key, val in info['counts'].items():
-                    if val > 0:
-                        print(f"    - {key}: {val} × {avg:,.0f} = {val * avg:,.0f}")
-        else:
-            print("  (none)")
-
-        breakdown = analysis['size_breakdown']
-        print(f"\nSIZE:")
-        print(f"  • Scalars (outside arrays): {breakdown['outside']:,} B")
-        print(f"  • Scalars (inside arrays): {breakdown['inside']:,} B")
-        print(f"  • Keys: {breakdown['keys']:,} B")
-        print(f"  • DOCUMENT: {analysis['document_size_bytes']:,} B")
-        print(f"  • COLLECTION: {analysis['collection_size_gb']:.4f} GB")
-        print("="*70)
+    def display_database_summary(self):
+        """
+        Display database summary (backward compatibility).
+        """
+        report = self.get_database_summary()
+        self.logger.info(report)
 
     def print_database_summary(self):
         """Prints the database summary."""
-        total_gb, details = self.compute_database_size_gb()
+        self.display_database_summary()
 
-        print(f"\n{'='*70}")
-        print(f"DATABASE SUMMARY")
-        print(f"{'='*70}")
+    def get_sharding_report(self, collection_name: str, sharding_key: str,
+                           distinct_values: int) -> str:
+        """
+        Get formatted sharding statistics report.
+        
+        Args:
+            collection_name: Collection name
+            sharding_key: Sharding key
+            distinct_values: Number of distinct values
+            
+        Returns:
+            Formatted report as string
+        """
+        stats = self.compute_sharding_stats(collection_name, sharding_key, distinct_values)
+        return ResultFormatter.format_sharding_stats(stats)
 
-        print(f"\nCOLLECTIONS:")
-        for coll_name, size_gb in details.items():
-            doc_count = self.collections[coll_name]['doc_count']
-            print(f"  • {coll_name:15s}: {size_gb:10.4f} GB  ({doc_count:,} docs)")
-
-        print(f"\nTOTAL: {total_gb:.4f} GB")
-        print(f"{'='*70}\n")
+    def display_sharding_stats(self, collection_name: str, sharding_key: str,
+                              distinct_values: int):
+        """
+        Display sharding statistics (backward compatibility).
+        
+        Args:
+            collection_name: Collection name
+            sharding_key: Sharding key
+            distinct_values: Number of distinct values
+        """
+        report = self.get_sharding_report(collection_name, sharding_key, distinct_values)
+        self.logger.info(report)
 
     def print_sharding_stats(self, collection_name: str, sharding_key: str,
                             distinct_values: int):
         """Prints sharding statistics."""
-        stats = self.compute_sharding_stats(collection_name, sharding_key, distinct_values)
-
-        print(f"\nSHARDING: {stats['collection']}-#{stats['sharding_key']}")
-        print(f"  • Total documents: {stats['total_docs']:,}")
-        print(f"  • Distinct values: {stats['distinct_values']:,}")
-        print(f"  • Servers: {stats['num_servers']:,}")
-        print(f"  • Docs/server: {stats['avg_docs_per_server']:,.2f}")
-        print(f"  • Distinct values/server: {stats['avg_distinct_values_per_server']:,.2f}")
+        self.display_sharding_stats(collection_name, sharding_key, distinct_values)
 
 
 
@@ -524,7 +545,7 @@ class NoSQLDatabaseCalculator:
                 'size_keys': result['size_keys']
             }
             
-            print(f"✓ Stored size for {coll_name} ({detected_type}): {result['doc_size']} B")
+            self.logger.info(f"✓ Stored size for {coll_name} ({detected_type}): {result['doc_size']} B")
 
     def compute_filter_query_vt(self, collection_name: str, filter_key: str, 
                                collection_sharding_key: str,
@@ -562,20 +583,20 @@ class NoSQLDatabaseCalculator:
         op_name = f"Filter {'with' if is_sharded else 'without'} sharding"
         
         # Displaying results
-        print(f"\n--- Filter Cost ({op_name}) ---")
-        print(f"Collection: {collection_name}")
-        print(f"Filter on: {filter_key}")
-        print(f"Sharding on: {collection_sharding_key}")
-        print(f"\nFormula: C1 = #S1 × size_S1 + #O1 × size_O1")
-        print(f"        C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
-        print(f"        C1 = {S1 * size_S1} + {num_O1 * size_O1}")
-        print(f"        C1 = {C1_volume:,} B")
+        self.logger.info(f"\n--- Filter Cost ({op_name}) ---")
+        self.logger.info(f"Collection: {collection_name}")
+        self.logger.info(f"Filter on: {filter_key}")
+        self.logger.info(f"Sharding on: {collection_sharding_key}")
+        self.logger.info(f"\nFormula: C1 = #S1 × size_S1 + #O1 × size_O1")
+        self.logger.info(f"        C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
+        self.logger.info(f"        C1 = {S1 * size_S1} + {num_O1 * size_O1}")
+        self.logger.info(f"        C1 = {C1_volume:,} B")
         
-        print(f"\nDetails:")
-        print(f"  • #S1 (servers contacted) = {S1}")
-        print(f"  • size_S1 (query size) = {size_S1} B")
-        print(f"  • #O1 (returned documents) = {num_O1:,}")
-        print(f"  • size_O1 (size per document) = {size_O1} B")
+        self.logger.info(f"\nDetails:")
+        self.logger.info(f"  • #S1 (servers contacted) = {S1}")
+        self.logger.info(f"  • size_S1 (query size) = {size_S1} B")
+        self.logger.info(f"  • #O1 (returned documents) = {num_O1:,}")
+        self.logger.info(f"  • size_O1 (size per document) = {size_O1} B")
         
         return {
             "query_type": "Filter",
@@ -629,7 +650,7 @@ class NoSQLDatabaseCalculator:
         is_sharded_C2 = (coll2_join_key == coll2_sharding_key)
         S2 = 1 if is_sharded_C2 else self.num_shards
         
-        print(f"\n  → Computing C2 sizes:")
+        self.logger.info(f"\n  → Computing C2 sizes:")
         
         num_O2, size_S2, _ = self.get_query_stats(
             coll2_name, 
@@ -641,7 +662,7 @@ class NoSQLDatabaseCalculator:
         # size_O2: PROJECTION sans JOIN (uniquement les champs SELECT de coll2)
         # On retire le JOIN pour ne garder que les champs projetés
         query_projection_c2 = self._create_projection_query(sql_query, coll2_name, remove_join=True)
-        print(f"    Projection C2 : {query_projection_c2}")
+        self.logger.info(f"    Projection C2 : {query_projection_c2}")
         counts_o2 = self.analyze_schema_fields(coll2_name, query=query_projection_c2)
         size_O2 = self.compute_size_from_counts(counts_o2)
         
@@ -654,25 +675,25 @@ class NoSQLDatabaseCalculator:
         c1_op = f"Filter {'with' if is_sharded_C1 else 'without'} sharding"
         c2_op = f"Loop {'with' if is_sharded_C2 else 'without'} sharding"
 
-        print(f"\n--- Join cost ---")
-        print(f"Collection 1: {coll1_name} (filter on {coll1_filter_key}, sharding on {coll1_sharding_key})")
-        print(f"Collection 2: {coll2_name} (join on {coll2_join_key}, sharding on {coll2_sharding_key})")
+        self.logger.info(f"\n--- Join cost ---")
+        self.logger.info(f"Collection 1: {coll1_name} (filter on {coll1_filter_key}, sharding on {coll1_sharding_key})")
+        self.logger.info(f"Collection 2: {coll2_name} (join on {coll2_join_key}, sharding on {coll2_sharding_key})")
         
-        print(f"\n[C1] {c1_op}")
-        print(f"  Formula: C1 = #S1 × size_S1 + #O1 × size_O1")
-        print(f"          C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
-        print(f"          C1 = {C1_volume:,} B")
-        print(f"  → Loops (O1) = {loops:,}")
+        self.logger.info(f"\n[C1] {c1_op}")
+        self.logger.info(f"  Formula: C1 = #S1 × size_S1 + #O1 × size_O1")
+        self.logger.info(f"          C1 = {S1} × {size_S1} + {num_O1} × {size_O1}")
+        self.logger.info(f"          C1 = {C1_volume:,} B")
+        self.logger.info(f"  → Loops (O1) = {loops:,}")
         
-        print(f"\n[C2] {c2_op} (×{loops:,} loops)")
-        print(f"  Formula per loop: C2 = #S2 × size_S2 + #O2 × size_O2")
-        print(f"                   C2 = {S2} × {size_S2} + {num_O2} × {size_O2}")
-        print(f"  C2 per loop = {C2_per_loop:,} B")
-        print(f"  C2 total = {loops:,} × {C2_per_loop:,} = {C2_volume:,} B")
+        self.logger.info(f"\n[C2] {c2_op} (×{loops:,} loops)")
+        self.logger.info(f"  Formula per loop: C2 = #S2 × size_S2 + #O2 × size_O2")
+        self.logger.info(f"                   C2 = {S2} × {size_S2} + {num_O2} × {size_O2}")
+        self.logger.info(f"  C2 per loop = {C2_per_loop:,} B")
+        self.logger.info(f"  C2 total = {loops:,} × {C2_per_loop:,} = {C2_volume:,} B")
         
-        print(f"\n[Vt] Formula: Vt = C1 + loops × C2")
-        print(f"            Vt = {C1_volume:,} + {C2_volume:,}")
-        print(f"            Vt = {Vt_total:,} B ({Vt_total / (1024**2):.2f} MB)")
+        self.logger.info(f"\n[Vt] Formula: Vt = C1 + loops × C2")
+        self.logger.info(f"            Vt = {C1_volume:,} + {C2_volume:,}")
+        self.logger.info(f"            Vt = {Vt_total:,} B ({Vt_total / (1024**2):.2f} MB)")
         
         return {
             "query_type": "Join",
@@ -719,7 +740,7 @@ class NoSQLDatabaseCalculator:
         
         # 1. Check for embedding in the entry collection (e.g., P in S -> DB3 for Q4)
         if target_coll_name in self.schema_map.get(entry_coll_name, []):
-            print(f"\n[{self.current_schema}] Denormalization detected: {target_coll_name} EMBEDDED in {entry_coll_name}. No JOIN required.")
+            self.logger.info(f"\n[{self.current_schema}] Denormalization detected: {target_coll_name} EMBEDDED in {entry_coll_name}. No JOIN required.")
             
             return self.compute_filter_query_vt(
                 collection_name=entry_coll_name,
@@ -730,7 +751,7 @@ class NoSQLDatabaseCalculator:
 
         # 2. Check for embedding in the target collection (e.g., S in P -> DB2 for Q4)
         elif entry_coll_name in self.schema_map.get(target_coll_name, []):
-            print(f"\n[{self.current_schema}] Denormalization detected: {entry_coll_name} EMBEDDED in {target_coll_name}. No JOIN required.")
+            self.logger.info(f"\n[{self.current_schema}] Denormalization detected: {entry_coll_name} EMBEDDED in {target_coll_name}. No JOIN required.")
             
             # Rewrite query as a filter on the HOST collection (target_coll_name)
             return self.compute_filter_query_vt(
@@ -742,7 +763,7 @@ class NoSQLDatabaseCalculator:
 
         # 3. Default case: JOIN is required (DB1 or non-embedded model)
         else:
-            print(f"\n[{self.current_schema}] Normalized Model (DB1) or non-embedded configuration: JOIN required.")
+            self.logger.info(f"\n[{self.current_schema}] Normalized Model (DB1) or non-embedded configuration: JOIN required.")
             
             return self.compute_join_query_vt(
                 coll1_name=entry_coll_name, 
@@ -891,9 +912,9 @@ class NoSQLDatabaseCalculator:
                 num_keys = len(all_fields)
 
         # 5. Log pour debugging
-        print(f"  [ANALYSIS] {collection_name} (Fields: {len(fields_counted)}){context_info}:")
-        print(f"    - Champs comptés: {', '.join(fields_counted) if fields_counted else 'none'}")
-        print(f"    - Counts: I:{num_int}, S:{num_string}, D:{num_date}, L:{num_longstring}, K:{num_keys}")
+        self.logger.info(f"  [ANALYSIS] {collection_name} (Fields: {len(fields_counted)}){context_info}:")
+        self.logger.info(f"    - Champs comptés: {', '.join(fields_counted) if fields_counted else 'none'}")
+        self.logger.info(f"    - Counts: I:{num_int}, S:{num_string}, D:{num_date}, L:{num_longstring}, K:{num_keys}")
             
         return {
             'num_int': num_int, 
@@ -932,19 +953,19 @@ class NoSQLDatabaseCalculator:
             Tuple (num_output_docs, size_S, size_O)
         """
         
-        print(f"\n[GET_QUERY_STATS] {collection_name} | {query_key} | {phase}")
-        print(f"  SQL Query: {sql_query}")
+        self.logger.info(f"\n[GET_QUERY_STATS] {collection_name} | {query_key} | {phase}")
+        self.logger.info(f"  SQL Query: {sql_query}")
         
         # ====================================================================
         # PARTIE 1: #O (nb of documents)
         # ====================================================================
-        print("QUERYYYYY"+str(query_key))
+        self.logger.info("QUERYYYYY"+str(query_key))
         if phase == "C1":
             group_match = re.search(r"GROUP BY\s+(?:\w+\.)?(\w+)", sql_query, re.IGNORECASE)
             group_key_sql = group_match.group(1) if group_match else None
             
             if group_key_sql:
-                print("  → Computing #O (GROUP BY detected):"+group_key_sql)
+                self.logger.info("  → Computing #O (GROUP BY detected):"+group_key_sql)
                 # Mapping de la clé SQL (ex: IDP) vers le type interne (ex: Prod)
                 clean_key = group_key_sql.lower().replace("id", "")
                 id_map = {"p": "Prod", "c": "Cl", "w": "Wa", "s": "Supp", "st": "St", "ol": "OL"}
@@ -954,20 +975,20 @@ class NoSQLDatabaseCalculator:
                 where_match = re.search(r"WHERE\s+(?:\w+\.)?(\w+)\s*=", sql_query, re.IGNORECASE)
                 
                 if where_match:
-                    print("  → Computing #O (WITH filter detected):"+where_match.group(1))
+                    self.logger.info("  → Computing #O (WITH filter detected):"+where_match.group(1))
                     # CAS AVEC FILTRE (ex: Q7 - Group by IDP pour UN client)
                     # On cherche la relation : ex: Nb de Prod par Client (avg_length['Cl']['Prod'])
                     filter_field = where_match.group(1).lower().replace("id", "")
                     filter_source = id_map.get(filter_field, "Cl")
                     
                     num_output_docs = self.avg_length.get(filter_source, {}).get(target_type, 1)
-                    print(f"  -> Aggregation with filter: avg {target_type} per {filter_source} = {num_output_docs}")
+                    self.logger.info(f"  -> Aggregation with filter: avg {target_type} per {filter_source} = {num_output_docs}")
                 else:
-                    print("  → Computing #O (NO filter detected):")
+                    self.logger.info("  → Computing #O (NO filter detected):")
                     # CAS SANS FILTRE (ex: Q6 - Group by IDP sur toute la table)
                     # Le nombre de groupes est le nombre total d'entités distinctes
                     num_output_docs = self.nb_docs.get(target_type, 1)
-                    print(f"  -> Full Aggregation: total {target_type} = {num_output_docs}")
+                    self.logger.info(f"  -> Full Aggregation: total {target_type} = {num_output_docs}")
             elif query_key == "IDP_IDW": 
                 num_output_docs = 1
             elif query_key == "brand": 
@@ -996,7 +1017,7 @@ class NoSQLDatabaseCalculator:
         # PARTIE 2: size_S (size of the query with WHERE + JOIN)
         # ====================================================================
         
-        print(f"\n  → Computing size_S :")
+        self.logger.info(f"\n  → Computing size_S :")
         counts_s = self.analyze_schema_fields(collection_name, query=sql_query)
         size_S = self.compute_size_from_counts(counts_s)
         
@@ -1007,8 +1028,8 @@ class NoSQLDatabaseCalculator:
         # Créer une version de la requête sans WHERE pour la projection
         query_projection = self._create_projection_query(sql_query, collection_name, remove_join=False)
         
-        print(f"\n  → Computing size_O (projection - SELECT only):")
-        print(f"    Projection query: {query_projection}")
+        self.logger.info(f"\n  → Computing size_O (projection - SELECT only):")
+        self.logger.info(f"    Projection query: {query_projection}")
         counts_o = self.analyze_schema_fields(collection_name, query=query_projection)
         size_O = self.compute_size_from_counts(counts_o)
         
@@ -1018,7 +1039,7 @@ class NoSQLDatabaseCalculator:
         
         # Cas spécial Q4 DB3 (Projection agrégée : name + quantity)
         if collection_name == "St" and query_key == "IDW" and self.current_schema == "DB3":
-            print("\n  [SPECIAL CASE] Q4 DB3 - Aggregated projection (name + quantity)")
+            self.logger.info("\n  [SPECIAL CASE] Q4 DB3 - Aggregated projection (name + quantity)")
             counts_name = self.analyze_schema_fields("Prod", field_list=["name"]) #Analyze Product fields separately
             counts_qty = self.analyze_schema_fields("St", field_list=["quantity"]) #Analyze Stock fields separately
             
@@ -1031,7 +1052,7 @@ class NoSQLDatabaseCalculator:
             }
             size_O = self.compute_size_from_counts(counts_o)
         
-        print(f"\n  ✓ Results: #O={num_output_docs}, size_S={size_S}B, size_O={size_O}B")
+        self.logger.info(f"\n  ✓ Results: #O={num_output_docs}, size_S={size_S}B, size_O={size_O}B")
         
         return (num_output_docs, size_S, size_O)
     
@@ -1084,25 +1105,25 @@ class NoSQLDatabaseCalculator:
         """
         collection_sharding_key = sharding_config.get(entry_coll_name, "N/A")
         
-        print(f"\n{'='*80}")
-        print(f"AGGREGATE QUERY ANALYSIS")
-        print(f"{'='*80}")
-        print(f"Collection: {entry_coll_name}")
-        print(f"Filter: {filter_key or 'None (Full scan)'}")
-        print(f"Group By: {group_key}")
-        print(f"Sharding: {collection_sharding_key}")
-        print(f"Aggregation: SUM(quantity)")
+        self.logger.info(f"\n{'='*80}")
+        self.logger.info(f"AGGREGATE QUERY ANALYSIS")
+        self.logger.info(f"{'='*80}")
+        self.logger.info(f"Collection: {entry_coll_name}")
+        self.logger.info(f"Filter: {filter_key or 'None (Full scan)'}")
+        self.logger.info(f"Group By: {group_key}")
+        self.logger.info(f"Sharding: {collection_sharding_key}")
+        self.logger.info(f"Aggregation: SUM(quantity)")
         if limit:
-            print(f"Limitttt: {limit}")
+            self.logger.info(f"Limitttt: {limit}")
         if target_coll_name:
-            print(f"Final JOIN with: {target_coll_name}")
+            self.logger.info(f"Final JOIN with: {target_coll_name}")
         
         # ====================================================================
         # PHASE C1: Initial Filter/Scan
         # ====================================================================
-        print(f"\n{'─'*80}")
-        print("[PHASE C1] Initial Filter/Scan")
-        print(f"{'─'*80}")
+        self.logger.info(f"\n{'─'*80}")
+        self.logger.info("[PHASE C1] Initial Filter/Scan")
+        self.logger.info(f"{'─'*80}")
         
         # Determine sharding for C1
         if filter_key:
@@ -1120,7 +1141,7 @@ class NoSQLDatabaseCalculator:
             subquery_match = re.search(r'\(\s*(SELECT.*?)\s*\)\s+(?:AS\s+)?\w+\s+ON', sql_query, re.IGNORECASE | re.DOTALL)
             if subquery_match:
                 c1_sql_query = subquery_match.group(1).strip()
-                print(f"  [EXTRACTED SUBQUERY]: {c1_sql_query}")
+                self.logger.info(f"  [EXTRACTED SUBQUERY]: {c1_sql_query}")
             else:
                 # No subquery found, use the original query
                 c1_sql_query = sql_query
@@ -1140,7 +1161,7 @@ class NoSQLDatabaseCalculator:
             "C1",
             c1_sql_query
         )
-        print(f"\n  → C1 FILTERRRR: {filter_key or 'None (Full scan)'}")
+        self.logger.info(f"\n  → C1 FILTERRRR: {filter_key or 'None (Full scan)'}")
         needs_shuffle = False
         if group_key and group_key != collection_sharding_key:
             # Si on filtre sur la clé de sharding avec un égalité (ex: WHERE IDC = 125)
@@ -1164,34 +1185,34 @@ class NoSQLDatabaseCalculator:
         # C1 = S1 * size_S1 + shuffle1 * size_shuffle1 + O1 * size_O1
         C1_volume = S1 * size_S1 + shuffle1 * size_shuffle1 + num_O1 * size_O1
         
-        print(f"\nC1 Formula: C1 = S1 × size_S1 + shuffle1 × size_shuffle1 + O1 × size_O1")
-        print(f"           C1 = {S1} × {size_S1} + {shuffle1:,} × {size_shuffle1} + {num_O1:,} × {size_O1}")
-        print(f"           C1 = {C1_volume:,} B")
-        print(f"\nDetails:")
-        print(f"  • Sharding strategy: {'WITH sharding' if is_sharded_C1 else 'WITHOUT sharding (broadcast/full scan)'}")
-        print(f"  • #S1 (servers contacted) = {S1}")
-        print(f"  • #O1 (documents to process) = {num_O1:,}")
-        print(f"  • size_O1 (document size) = {size_O1} B")
+        self.logger.info(f"\nC1 Formula: C1 = S1 × size_S1 + shuffle1 × size_shuffle1 + O1 × size_O1")
+        self.logger.info(f"           C1 = {S1} × {size_S1} + {shuffle1:,} × {size_shuffle1} + {num_O1:,} × {size_O1}")
+        self.logger.info(f"           C1 = {C1_volume:,} B")
+        self.logger.info(f"\nDetails:")
+        self.logger.info(f"  • Sharding strategy: {'WITH sharding' if is_sharded_C1 else 'WITHOUT sharding (broadcast/full scan)'}")
+        self.logger.info(f"  • #S1 (servers contacted) = {S1}")
+        self.logger.info(f"  • #O1 (documents to process) = {num_O1:,}")
+        self.logger.info(f"  • size_O1 (document size) = {size_O1} B")
         
         if needs_shuffle:
-            print(f"\n  ⚠️  SHUFFLE REQUIRED!")
-            print(f"      Reason: Group By key ({group_key}) ≠ Sharding key ({collection_sharding_key})")
-            print(f"      • shuffle1 (documents to redistribute) = {shuffle1:,}")
-            print(f"      • size_shuffle1 (shuffle data size) = {size_shuffle1} B")
-            print(f"      • Shuffle cost = {shuffle1 * size_shuffle1:,} B")
-            print(f"      • This requires transferring all filtered data across the network")
+            self.logger.info(f"\n  ⚠️  SHUFFLE REQUIRED!")
+            self.logger.info(f"      Reason: Group By key ({group_key}) ≠ Sharding key ({collection_sharding_key})")
+            self.logger.info(f"      • shuffle1 (documents to redistribute) = {shuffle1:,}")
+            self.logger.info(f"      • size_shuffle1 (shuffle data size) = {size_shuffle1} B")
+            self.logger.info(f"      • Shuffle cost = {shuffle1 * size_shuffle1:,} B")
+            self.logger.info(f"      • This requires transferring all filtered data across the network")
         else:
-            print(f"\n  ✓ NO SHUFFLE NEEDED!")
-            print(f"      Reason: Group By key ({group_key}) = Sharding key ({collection_sharding_key})")
-            print(f"      • Data is already partitioned by {group_key}")
-            print(f"      • Each server can perform local aggregation without network transfer")
+            self.logger.info(f"\n  ✓ NO SHUFFLE NEEDED!")
+            self.logger.info(f"      Reason: Group By key ({group_key}) = Sharding key ({collection_sharding_key})")
+            self.logger.info(f"      • Data is already partitioned by {group_key}")
+            self.logger.info(f"      • Each server can perform local aggregation without network transfer")
         
         # ====================================================================
         # PHASE C2: Aggregation and Result Collection
         # ====================================================================
-        print(f"\n{'─'*80}")
-        print("[PHASE C2] Aggregation & Result Collection")
-        print(f"{'─'*80}")
+        self.logger.info(f"\n{'─'*80}")
+        self.logger.info("[PHASE C2] Aggregation & Result Collection")
+        self.logger.info(f"{'─'*80}")
         
         num_O2 = 1
         
@@ -1222,17 +1243,17 @@ class NoSQLDatabaseCalculator:
         size_S2 = size_O2
         C2_volume = S2 * size_S2 + shuffle2 * size_shuffle2 + num_O2 * size_O2
         
-        print(f"\nC2 Formula: C2 = S2 × size_S2 + shuffle2 × size_shuffle2 + O2 × size_O2")
-        print(f"           C2 = {S2} × {size_S2} + {shuffle2:,} × {size_shuffle2} + {num_O2:,} × {size_O2}")
-        print(f"           C2 = {C2_volume:,} B")
-        print(f"\nDetails:")
-        print(f"  • #S2 (servers with results) = {S2}")
-        print(f"  • #O2 (groups to collect) = {num_O2:,}")
-        print(f"  • size_O2 (aggregated result size) = {size_O2} B")
-        print(f"    ({group_key} + SUM(quantity) + keys)")
+        self.logger.info(f"\nC2 Formula: C2 = S2 × size_S2 + shuffle2 × size_shuffle2 + O2 × size_O2")
+        self.logger.info(f"           C2 = {S2} × {size_S2} + {shuffle2:,} × {size_shuffle2} + {num_O2:,} × {size_O2}")
+        self.logger.info(f"           C2 = {C2_volume:,} B")
+        self.logger.info(f"\nDetails:")
+        self.logger.info(f"  • #S2 (servers with results) = {S2}")
+        self.logger.info(f"  • #O2 (groups to collect) = {num_O2:,}")
+        self.logger.info(f"  • size_O2 (aggregated result size) = {size_O2} B")
+        self.logger.info(f"    ({group_key} + SUM(quantity) + keys)")
         if needs_shuffle:
-            print(f"  • shuffle2 (communication between servers) = {shuffle2:,}")
-            print(f"  • Shuffle cost for C2 = {shuffle2 * size_shuffle2:,} B")
+            self.logger.info(f"  • shuffle2 (communication between servers) = {shuffle2:,}")
+            self.logger.info(f"  • Shuffle cost for C2 = {shuffle2 * size_shuffle2:,} B")
         
         
         # ====================================================================
@@ -1252,28 +1273,28 @@ class NoSQLDatabaseCalculator:
             loops = 1
             Vcom_total = C1_volume + loops * C2_volume
         
-        print(f"\n{'='*80}")
-        print("[TOTAL COST]")
-        print(f"{'='*80}")
+        self.logger.info(f"\n{'='*80}")
+        self.logger.info("[TOTAL COST]")
+        self.logger.info(f"{'='*80}")
         
         if target_coll_name:
-            print(f"\nFormula: Vcom = C1 + loops*C2")
-            print(f"              = C1 + C3  (where C3 = {loops:,} lookups)")
-            print(f"        Vcom = {C1_volume:,} + {loops * C2_volume:,}")
+            self.logger.info(f"\nFormula: Vcom = C1 + loops*C2")
+            self.logger.info(f"              = C1 + C3  (where C3 = {loops:,} lookups)")
+            self.logger.info(f"        Vcom = {C1_volume:,} + {loops * C2_volume:,}")
         else:
-            print(f"\nFormula: Vcom = C1 + loops*C2")
-            print(f"        Vcom = {C1_volume:,} + {loops} × {C2_volume:,}")
+            self.logger.info(f"\nFormula: Vcom = C1 + loops*C2")
+            self.logger.info(f"        Vcom = {C1_volume:,} + {loops} × {C2_volume:,}")
         
-        print(f"        Vcom = {Vcom_total:,} B ({Vcom_total / (1024**2):.2f} MB)")
+        self.logger.info(f"        Vcom = {Vcom_total:,} B ({Vcom_total / (1024**2):.2f} MB)")
         
-        print(f"\nCost Breakdown:")
-        print(f"  • C1 (Filter + Shuffle):  {C1_volume:>15,} B ({C1_volume/Vcom_total*100:>5.1f}%)")
+        self.logger.info(f"\nCost Breakdown:")
+        self.logger.info(f"  • C1 (Filter + Shuffle):  {C1_volume:>15,} B ({C1_volume/Vcom_total*100:>5.1f}%)")
         if target_coll_name:
-            print(f"  • C3 (loops={loops:,} × C2):  {loops * C2_volume:>15,} B ({(loops * C2_volume)/Vcom_total*100:>5.1f}%)")
+            self.logger.info(f"  • C3 (loops={loops:,} × C2):  {loops * C2_volume:>15,} B ({(loops * C2_volume)/Vcom_total*100:>5.1f}%)")
         else:
-            print(f"  • C2 (loops={loops} × Aggregate):  {C2_volume:>15,} B ({C2_volume/Vcom_total*100:>5.1f}%)")
-        print(f"  {'─'*50}")
-        print(f"  • TOTAL:                   {Vcom_total:>15,} B")
+            self.logger.info(f"  • C2 (loops={loops} × Aggregate):  {C2_volume:>15,} B ({C2_volume/Vcom_total*100:>5.1f}%)")
+        self.logger.info(f"  {'─'*50}")
+        self.logger.info(f"  • TOTAL:                   {Vcom_total:>15,} B")
         
         return {
             "query_type": "Aggregate",
