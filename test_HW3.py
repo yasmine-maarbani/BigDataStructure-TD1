@@ -25,12 +25,12 @@ def parse_sql_query(sql_query: str) -> Dict:
         # Cas Q6/Q7 : La collection d'entrée est dans la sous-requête (la dernière citée)
         entry_coll_name = normalize_coll_name(all_froms[-1])
         target_coll_name = normalize_coll_name(all_froms[0])
-        print("ICIIIII")
+        # print("ICIIIII")
     else:
         entry_coll_name = normalize_coll_name(all_froms[0]) if all_froms else None
         join_match = re.search(r'JOIN\s+(\w+)', sql_query, re.IGNORECASE)
         target_coll_name = normalize_coll_name(join_match.group(1)) if join_match else None
-        print("LA")
+        # print("LA")
     # 2. Extraction du filtre (WHERE)
     filter_match = re.search(r'WHERE\s+([\w\.]+)\s*(=|>|<|!=)', sql_query, re.IGNORECASE)
     filter_key = filter_match.group(1).split('.')[-1] if filter_match else target_coll_name if target_coll_name else entry_coll_name

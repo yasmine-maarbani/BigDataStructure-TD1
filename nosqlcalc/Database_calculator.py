@@ -938,7 +938,7 @@ class NoSQLDatabaseCalculator:
         # ====================================================================
         # PARTIE 1: #O (nb of documents)
         # ====================================================================
-        print("QUERYYYYY"+str(query_key))
+        # print("QUERYYYYY"+str(query_key))
         if phase == "C1":
             group_match = re.search(r"GROUP BY\s+(?:\w+\.)?(\w+)", sql_query, re.IGNORECASE)
             group_key_sql = group_match.group(1) if group_match else None
@@ -1092,8 +1092,8 @@ class NoSQLDatabaseCalculator:
         print(f"Group By: {group_key}")
         print(f"Sharding: {collection_sharding_key}")
         print(f"Aggregation: SUM(quantity)")
-        if limit:
-            print(f"Limitttt: {limit}")
+        # if limit:
+        #     print(f"Limitttt: {limit}")
         if target_coll_name:
             print(f"Final JOIN with: {target_coll_name}")
         
@@ -1140,7 +1140,7 @@ class NoSQLDatabaseCalculator:
             "C1",
             c1_sql_query
         )
-        print(f"\n  → C1 FILTERRRR: {filter_key or 'None (Full scan)'}")
+        print(f"\n  → C1 FILTER: {filter_key or 'None (Full scan)'}")
         needs_shuffle = False
         if group_key and group_key != collection_sharding_key:
             # Si on filtre sur la clé de sharding avec un égalité (ex: WHERE IDC = 125)
